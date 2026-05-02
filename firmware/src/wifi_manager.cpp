@@ -251,10 +251,11 @@ void WifiManager::Clear(NotifyFn notify) {
   prefs.begin(config::kNvsNamespace, false);
   prefs.remove(config::kNvsKeyWifiSsid);
   prefs.remove(config::kNvsKeyWifiPass);
+  prefs.remove(config::kNvsKeyPrinterAddr);
   prefs.putUChar(config::kNvsKeyConfigured, 0);
   prefs.end();
 
-  Serial.println("WiFi: credentials cleared");
+  Serial.println("WiFi: config cleared");
   SendStatus(notify);
 }
 

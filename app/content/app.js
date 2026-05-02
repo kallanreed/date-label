@@ -70,6 +70,7 @@ const state = {
   wifi: {
     status: 0x00,
     ssid: "",
+    savedSsid: "",
     networks: [],
     scanning: false,
   },
@@ -78,6 +79,13 @@ const state = {
     devices: [],
     selectedAddress: "",
     boundAddress: "",
+  },
+  device: {
+    timeSynced: false,
+    time: "",
+  },
+  config: {
+    editing: null,
   },
   preview: {
     loading: false,
@@ -185,10 +193,14 @@ function handleGattDisconnected() {
   state.ble.commandChain = Promise.resolve();
   state.wifi.networks = [];
   state.wifi.scanning = false;
+  state.wifi.savedSsid = "";
   state.printer.devices = [];
   state.printer.scanning = false;
   state.printer.selectedAddress = "";
   state.printer.boundAddress = "";
+  state.device.timeSynced = false;
+  state.device.time = "";
+  state.config.editing = null;
   setBleStatus("Disconnected.");
   updateUI();
 }
@@ -221,6 +233,7 @@ async function connectBle() {
   updateUI();
 
   await getWifiStatus();
+  await loadSavedWifi();
   await getSavedPrinter();
   await loadPreview();
 }
@@ -314,6 +327,13 @@ function getSavedPrinter() {
       reject(err);
     });
   });
+}
+
+async function loadSavedWifi() {
+  const creds = await getSavedCreds();
+  state.wifi.savedSsid = creds?.ssid || "";
+  updateUI();
+  return state.wifi.savedSsid;
 }
 
 // ── WiFi scan ───────────────────────────────────────────────────────────
@@ -471,6 +491,17 @@ function printLabel() {
       reject(err);
     });
   });
+}
+
+function toggleConfigEditor(section) {
+  state.config.editing = state.config.editing === section ? null : section;
+
+  if (state.config.editing === "wifi" && ui.ssidInput) {
+    ui.ssidInput.value = state.wifi.savedSsid || state.wifi.ssid || "";
+    if (ui.passInput) ui.passInput.value = "";
+  }
+
+  updateUI();
 }
 
 // ── WiFi connect ────────────────────────────────────────────────────────
@@ -727,13 +758,10 @@ async function loadPreview() {
   updateUI();
 
   try {
-    if (ui.timeStatus) ui.timeStatus.textContent = "Checking time...";
     const time = await getTimeStatus();
-    if (ui.timeStatus) {
-      ui.timeStatus.textContent = time.synced
-        ? `Time synced: ${time.date}`
-        : "Time not synced (waiting for date service)";
-    }
+    state.device.timeSynced = time.synced;
+    state.device.time = time.date;
+    updateStatusUI();
 
     if (!time.synced) {
       if (ui.bitmapStatus) ui.bitmapStatus.textContent = "Waiting for time sync.";
@@ -748,6 +776,9 @@ async function loadPreview() {
     }
   } catch (err) {
     debugLog("preview load error", err);
+    state.device.timeSynced = false;
+    state.device.time = "";
+    updateStatusUI();
     if (ui.bitmapStatus) ui.bitmapStatus.textContent = `Error: ${err.message}`;
   } finally {
     state.preview.loading = false;
@@ -760,6 +791,24 @@ function updateWifiUI() {
     const name = WIFI_STATUS_NAME[state.wifi.status] || "Unknown";
     const ssid = state.wifi.ssid ? ` (${state.wifi.ssid})` : "";
     ui.wifiStatusText.textContent = `${name}${ssid}`;
+  }
+}
+
+function updateStatusUI() {
+  if (ui.statusWifiValue) {
+    if (state.wifi.status === 0x02 && state.wifi.ssid) {
+      ui.statusWifiValue.textContent = `Connected to ${state.wifi.ssid}`;
+    } else if (state.wifi.savedSsid) {
+      ui.statusWifiValue.textContent = `Saved: ${state.wifi.savedSsid}`;
+    } else {
+      ui.statusWifiValue.textContent = "Not configured";
+    }
+  }
+
+  if (ui.statusTimeValue) {
+    ui.statusTimeValue.textContent = state.device.timeSynced && state.device.time
+      ? state.device.time
+      : "Waiting for sync";
   }
 }
 
@@ -781,6 +830,34 @@ function updatePrinterUI() {
   }
 }
 
+function updateConfigUI() {
+  if (ui.configWifiValue) {
+    ui.configWifiValue.textContent = state.wifi.savedSsid || "Not configured";
+  }
+
+  if (ui.configPrinterValue) {
+    ui.configPrinterValue.textContent = state.printer.boundAddress || "Not configured";
+  }
+
+  if (ui.editWifiBtn) {
+    ui.editWifiBtn.textContent = state.config.editing === "wifi" ? "Done" : "Edit";
+    ui.editWifiBtn.disabled = !state.ble.connected;
+  }
+
+  if (ui.editPrinterBtn) {
+    ui.editPrinterBtn.textContent = state.config.editing === "printer" ? "Done" : "Edit";
+    ui.editPrinterBtn.disabled = !state.ble.connected;
+  }
+
+  if (ui.wifiEditor) {
+    ui.wifiEditor.hidden = state.config.editing !== "wifi";
+  }
+
+  if (ui.printerEditor) {
+    ui.printerEditor.hidden = state.config.editing !== "printer";
+  }
+}
+
 function updateUI() {
   if (!ui.connectBtn) return;
 
@@ -796,8 +873,7 @@ function updateUI() {
     ui.printerBindBtn.disabled =
       !connected || state.printer.scanning || !state.printer.selectedAddress;
   }
-  if (ui.clearBtn) ui.clearBtn.disabled = !connected;
-  if (ui.loadSavedBtn) ui.loadSavedBtn.disabled = !connected;
+  if (ui.clearConfigBtn) ui.clearConfigBtn.disabled = !connected;
   if (ui.reloadBitmapBtn) ui.reloadBitmapBtn.disabled = !connected;
   if (ui.printBtn) {
     ui.printBtn.disabled =
@@ -814,7 +890,9 @@ function updateUI() {
   }
 
   updateWifiUI();
+  updateStatusUI();
   updatePrinterUI();
+  updateConfigUI();
 }
 
 function renderNetworkList(networks) {
@@ -867,62 +945,89 @@ function renderPrinterList(devices) {
 function renderApp(root) {
   root.innerHTML = `
     <main class="layout">
-      <header class="page-header">
-        <p class="eyebrow">Date Label Setup</p>
-        <h1>Configure and test the printer flow</h1>
-        <p class="page-copy">Connect to the ESP32, join WiFi, bind the D12, preview the date label, and test printing from one screen.</p>
-      </header>
-
-      <div class="card-grid">
-        <section class="card">
-          <div class="card-header">
-            <h2>Device</h2>
-            <p class="section-copy">Start by connecting to the ESP32 config service over Web Bluetooth.</p>
-          </div>
+      <section class="card compact-card">
+        <div class="card-header">
+          <h2>Device</h2>
+        </div>
         <div class="button-row">
           <button id="connect-btn" class="primary" type="button">Connect Device</button>
         </div>
         <p id="ble-status" class="status">Not connected.</p>
-        </section>
+      </section>
 
-        <section class="card">
-          <div class="card-header">
-            <h2>WiFi</h2>
-            <p class="section-copy">Scan for nearby networks, then save credentials so the device can sync the current date.</p>
-          </div>
-        <div class="button-row">
-          <button id="scan-btn" type="button" disabled>Scan Networks</button>
+      <section class="card compact-card">
+        <div class="card-header">
+          <h2>Status</h2>
         </div>
-        <div id="network-list" class="network-list"></div>
-        <div class="wifi-form">
-          <input id="ssid-input" type="text" placeholder="SSID" />
-          <input id="pass-input" type="password" placeholder="Password" />
-          <button id="wifi-connect-btn" type="button" disabled>Save WiFi</button>
-        </div>
-        <p id="wifi-status-text" class="status">Idle</p>
-        </section>
+        <table class="info-table">
+          <tbody>
+            <tr>
+              <th scope="row">WiFi</th>
+              <td id="status-wifi-value">Not configured</td>
+            </tr>
+            <tr>
+              <th scope="row">Device Time</th>
+              <td id="status-time-value">Waiting for sync</td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
 
-        <section class="card">
-          <div class="card-header">
-            <h2>Printer</h2>
-            <p class="section-copy">Find the D12 over BLE, then store its address so the ESP32 can reconnect for each print job.</p>
-          </div>
-        <div class="button-row">
-          <button id="printer-scan-btn" type="button" disabled>Scan Printers</button>
-          <button id="printer-bind-btn" type="button" disabled>Save Printer</button>
+      <section class="card">
+        <div class="card-header">
+          <h2>Config</h2>
         </div>
-        <div id="printer-list" class="network-list"></div>
-        <p id="printer-selection" class="meta">Select a printer from the scan results.</p>
-        <p id="printer-status" class="status">No printer bound.</p>
-        </section>
-      </div>
+        <table class="info-table config-table">
+          <tbody>
+            <tr>
+              <th scope="row">WiFi SSID</th>
+              <td id="config-wifi-value">Not configured</td>
+              <td class="table-action">
+                <button id="edit-wifi-btn" class="secondary" type="button" disabled>Edit</button>
+              </td>
+            </tr>
+            <tr>
+              <th scope="row">Printer</th>
+              <td id="config-printer-value">Not configured</td>
+              <td class="table-action">
+                <button id="edit-printer-btn" class="secondary" type="button" disabled>Edit</button>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+
+        <div id="wifi-editor" class="config-editor" hidden>
+          <div class="button-row">
+            <button id="scan-btn" type="button" disabled>Scan Networks</button>
+          </div>
+          <div id="network-list" class="network-list"></div>
+          <div class="wifi-form">
+            <input id="ssid-input" type="text" placeholder="SSID" />
+            <input id="pass-input" type="password" placeholder="Password" />
+            <button id="wifi-connect-btn" type="button" disabled>Save WiFi</button>
+          </div>
+          <p id="wifi-status-text" class="status">Idle</p>
+        </div>
+
+        <div id="printer-editor" class="config-editor" hidden>
+          <div class="button-row">
+            <button id="printer-scan-btn" type="button" disabled>Scan Printers</button>
+            <button id="printer-bind-btn" type="button" disabled>Save Printer</button>
+          </div>
+          <div id="printer-list" class="network-list"></div>
+          <p id="printer-selection" class="meta">Select a printer from the scan results.</p>
+          <p id="printer-status" class="status">No printer bound.</p>
+        </div>
+
+        <div class="button-row section-actions">
+          <button id="clear-config-btn" class="secondary" type="button" disabled>Clear Config</button>
+        </div>
+      </section>
 
       <section class="card">
         <div class="card-header">
           <h2>Label Preview</h2>
-          <p class="section-copy">This preview is shown at the bitmap&apos;s actual size. Printing here uses the same ESP32 path as the eventual hardware button.</p>
         </div>
-        <p id="time-status" class="status">Not connected.</p>
         <div class="preview-row">
           <div class="preview-shell">
             <canvas id="bitmap-canvas" class="preview-canvas"></canvas>
@@ -934,35 +1039,31 @@ function renderApp(root) {
         </div>
         <p id="bitmap-status" class="status"></p>
       </section>
-
-      <details class="card">
-        <summary>Advanced</summary>
-        <div class="button-row" style="margin-top: 0.75rem">
-          <button id="load-saved-btn" type="button" disabled>Load Saved</button>
-          <button id="clear-btn" type="button" disabled>Clear Credentials</button>
-        </div>
-        <p id="saved-creds" class="meta">No saved credentials loaded.</p>
-      </details>
     </main>
   `;
 
   ui.connectBtn = root.querySelector("#connect-btn");
   ui.bleStatus = root.querySelector("#ble-status");
+  ui.statusWifiValue = root.querySelector("#status-wifi-value");
+  ui.statusTimeValue = root.querySelector("#status-time-value");
+  ui.configWifiValue = root.querySelector("#config-wifi-value");
+  ui.configPrinterValue = root.querySelector("#config-printer-value");
+  ui.editWifiBtn = root.querySelector("#edit-wifi-btn");
+  ui.editPrinterBtn = root.querySelector("#edit-printer-btn");
   ui.scanBtn = root.querySelector("#scan-btn");
   ui.networkList = root.querySelector("#network-list");
   ui.ssidInput = root.querySelector("#ssid-input");
   ui.passInput = root.querySelector("#pass-input");
   ui.wifiConnectBtn = root.querySelector("#wifi-connect-btn");
   ui.wifiStatusText = root.querySelector("#wifi-status-text");
+  ui.wifiEditor = root.querySelector("#wifi-editor");
   ui.printerScanBtn = root.querySelector("#printer-scan-btn");
   ui.printerBindBtn = root.querySelector("#printer-bind-btn");
   ui.printerList = root.querySelector("#printer-list");
   ui.printerSelection = root.querySelector("#printer-selection");
   ui.printerStatus = root.querySelector("#printer-status");
-  ui.loadSavedBtn = root.querySelector("#load-saved-btn");
-  ui.clearBtn = root.querySelector("#clear-btn");
-  ui.savedCreds = root.querySelector("#saved-creds");
-  ui.timeStatus = root.querySelector("#time-status");
+  ui.printerEditor = root.querySelector("#printer-editor");
+  ui.clearConfigBtn = root.querySelector("#clear-config-btn");
   ui.bitmapCanvas = root.querySelector("#bitmap-canvas");
   ui.reloadBitmapBtn = root.querySelector("#reload-bitmap-btn");
   ui.printBtn = root.querySelector("#print-btn");
@@ -980,6 +1081,9 @@ function renderApp(root) {
     }
     updateUI();
   });
+
+  ui.editWifiBtn.addEventListener("click", () => toggleConfigEditor("wifi"));
+  ui.editPrinterBtn.addEventListener("click", () => toggleConfigEditor("printer"));
 
   ui.scanBtn.addEventListener("click", async () => {
     setWifiStatus("Scanning...");
@@ -1003,8 +1107,11 @@ function renderApp(root) {
     setWifiStatus(`Connecting to "${ssid}"...`);
     try {
       await connectWifi(ssid, pass);
+      state.wifi.savedSsid = ssid;
+      state.config.editing = null;
       setWifiStatus(`Connected to "${ssid}".`);
       await loadPreview();
+      updateUI();
     } catch (err) {
       setWifiStatus(`WiFi failed: ${err.message}`);
     }
@@ -1047,9 +1154,11 @@ function renderApp(root) {
     try {
       await bindPrinter(state.printer.selectedAddress);
       await getSavedPrinter();
+      state.config.editing = null;
       if (ui.printerStatus) {
         ui.printerStatus.textContent = `Bound printer: ${state.printer.boundAddress}`;
       }
+      updateUI();
     } catch (err) {
       if (ui.printerStatus) {
         ui.printerStatus.textContent = `Bind failed: ${err.message}`;
@@ -1057,26 +1166,29 @@ function renderApp(root) {
     }
   });
 
-  ui.loadSavedBtn.addEventListener("click", async () => {
-    try {
-      const creds = await getSavedCreds();
-      if (creds) {
-        ui.savedCreds.textContent = `SSID: ${creds.ssid} / Pass: ${creds.password}`;
-      } else {
-        ui.savedCreds.textContent = "No saved credentials.";
-      }
-    } catch (err) {
-      ui.savedCreds.textContent = `Error: ${err.message}`;
-    }
-  });
-
-  ui.clearBtn.addEventListener("click", async () => {
+  ui.clearConfigBtn.addEventListener("click", async () => {
     try {
       await writeCmd(CMD.WIFI_CLEAR);
-      ui.savedCreds.textContent = "Credentials cleared.";
+      state.wifi.savedSsid = "";
+      state.wifi.ssid = "";
+      state.wifi.networks = [];
+      state.wifi.status = 0x00;
+      state.printer.boundAddress = "";
+      state.printer.selectedAddress = "";
+      state.printer.devices = [];
+      state.device.timeSynced = false;
+      state.device.time = "";
+      state.config.editing = null;
+      renderNetworkList([]);
+      renderPrinterList([]);
       setWifiStatus("Idle");
+      if (ui.printerStatus) ui.printerStatus.textContent = "No printer bound.";
+      if (ui.bitmapStatus) ui.bitmapStatus.textContent = "Config cleared.";
+      ui.bitmapCanvas.width = 0;
+      ui.bitmapCanvas.height = 0;
+      updateUI();
     } catch (err) {
-      ui.savedCreds.textContent = `Error: ${err.message}`;
+      if (ui.bitmapStatus) ui.bitmapStatus.textContent = `Clear failed: ${err.message}`;
     }
   });
 
