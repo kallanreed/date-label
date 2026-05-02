@@ -1,0 +1,244 @@
+:root {
+  color-scheme: dark;
+  font-family: Inter, system-ui, sans-serif;
+  line-height: 1.5;
+  font-weight: 400;
+  background: #0f1115;
+  color: #f5f7fb;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+  background:
+    radial-gradient(circle at top, rgba(88, 141, 255, 0.2), transparent 28%),
+    #0f1115;
+}
+
+button,
+input,
+select {
+  font: inherit;
+}
+
+code {
+  font-family: "SFMono-Regular", ui-monospace, monospace;
+}
+
+#app {
+  width: 100%;
+}
+
+/* Layout */
+
+.layout {
+  width: min(700px, calc(100% - 2rem));
+  margin: 0 auto;
+  padding: 1.5rem 0 4rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+/* Card */
+
+.card {
+  padding: 1.25rem;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 16px;
+  background: rgba(18, 22, 31, 0.9);
+  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.2);
+}
+
+.card h2 {
+  margin: 0 0 0.85rem;
+  font-size: 0.95rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #90a6ff;
+}
+
+/* Buttons */
+
+button {
+  padding: 0.6rem 1.1rem;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  color: inherit;
+  cursor: pointer;
+}
+
+button.primary {
+  background: rgba(88, 141, 255, 0.15);
+}
+
+button.secondary {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+button:hover {
+  background: rgba(88, 141, 255, 0.28);
+}
+
+button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.button-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+
+.button-row button {
+  flex: 1 1 180px;
+}
+
+/* Status */
+
+.status {
+  margin: 0.75rem 0 0;
+  font-size: 0.875rem;
+  color: #c9d2e3;
+}
+
+/* Settings */
+
+.settings-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.875rem;
+}
+
+.settings-row input,
+.settings-row select {
+  height: 2.5rem;
+  padding: 0 0.75rem;
+  box-sizing: border-box;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: #111722;
+  color: inherit;
+}
+
+.settings-row select {
+  flex: 1;
+  min-width: 0;
+}
+
+/* WiFi form */
+
+.wifi-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+}
+
+.wifi-form input {
+  flex: 1 1 140px;
+  height: 2.5rem;
+  padding: 0 0.75rem;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: #111722;
+  color: inherit;
+}
+
+.wifi-form button {
+  flex: 0 0 auto;
+}
+
+/* Network list */
+
+.network-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 0.75rem;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.network-list:empty {
+  display: none;
+}
+
+.network-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.5rem 0.75rem;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.03);
+  cursor: pointer;
+  font-size: 0.875rem;
+}
+
+.network-item:hover {
+  background: rgba(88, 141, 255, 0.12);
+}
+
+.network-item.selected {
+  background: rgba(88, 141, 255, 0.2);
+  border: 1px solid rgba(88, 141, 255, 0.4);
+}
+
+.network-ssid {
+  font-weight: 500;
+}
+
+.network-rssi {
+  color: #c9d2e3;
+  font-size: 0.8rem;
+}
+
+/* Details */
+
+details.card > summary {
+  cursor: pointer;
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: #c9d2e3;
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+details.card > summary::-webkit-details-marker {
+  display: none;
+}
+
+details.card > summary::before {
+  content: "\25b8";
+  font-size: 0.75em;
+  color: #90a6ff;
+}
+
+details[open].card > summary::before {
+  content: "\25be";
+}
+
+.meta {
+  margin: 0.5rem 0 0;
+  font-size: 0.8rem;
+  color: #c9d2e3;
+  word-break: break-all;
+}
+
+@media (max-width: 480px) {
+  .layout {
+    width: calc(100% - 1.5rem);
+    padding-top: 1rem;
+  }
+}

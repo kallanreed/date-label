@@ -1,0 +1,9 @@
+.DS_Store
+**/.DS_Store
+app/.dev.vars
+app/.env
+app/.env.*
+app/node_modules/
+app/.wrangler
+firmware/.pio/
+firmware/.vscode/
