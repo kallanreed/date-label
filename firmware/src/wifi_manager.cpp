@@ -78,8 +78,10 @@ bool ParseDateTimeResponse(const String& dateStr, struct tm& out, int32_t& utcOf
 
 void WifiManager::Begin() {
   WiFi.mode(WIFI_STA);
+  WiFi.persistent(false);
   WiFi.setAutoReconnect(true);
-  WiFi.disconnect();
+  WiFi.disconnect(false, true);
+  delay(500);
 
   Preferences prefs;
   prefs.begin(config::kNvsNamespace, false);
@@ -115,9 +117,10 @@ void WifiManager::RetryConnect(NotifyFn notify, int status, const char* reason) 
       "WiFi: retrying \"%s\" after %s (status=%s/%d)\n",
       ssid_, reason,
       WifiStatusName(static_cast<wl_status_t>(status)), status);
-  WiFi.disconnect();
-  delay(100);
-  AutoConnect();
+  status_ = WifiStatus::kConnecting;
+  connectPending_ = true;
+  connectStartMs_ = millis();
+  WiFi.reconnect();
   SendStatus(notify);
 }
 
