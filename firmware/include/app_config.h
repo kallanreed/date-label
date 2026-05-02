@@ -36,7 +36,7 @@ constexpr uint8_t kFontCharGap = 1;
 constexpr uint8_t kDateStringLength = 10;
 
 // ── Time Sync ────────────────────────────────────────────────────────────
-constexpr char kTimeSyncUrl[] = "http://www.google.com";
+constexpr char kTimeSyncUrl[] = "https://date-label.pages.dev/local-date";
 
 // ── NVS Keys ─────────────────────────────────────────────────────────────
 constexpr char kNvsNamespace[] = "datelabel";

@@ -1,9 +1,10 @@
 #include "wifi_manager.h"
 
 #include <Arduino.h>
+#include <HTTPClient.h>
 #include <Preferences.h>
 #include <WiFi.h>
-#include <WiFiClient.h>
+#include <WiFiClientSecure.h>
 
 #include "app_config.h"
 #include "config_protocol.h"
@@ -23,6 +24,54 @@ const char* WifiStatusName(wl_status_t status) {
     case WL_DISCONNECTED: return "WL_DISCONNECTED";
     default: return "WL_UNKNOWN";
   }
+}
+
+bool IsDateStringValid(const String& dateStr) {
+  return dateStr.length() == 25 &&
+         isDigit(dateStr[0]) &&
+         isDigit(dateStr[1]) &&
+         isDigit(dateStr[2]) &&
+         isDigit(dateStr[3]) &&
+         dateStr[4] == '-' &&
+         isDigit(dateStr[5]) &&
+         isDigit(dateStr[6]) &&
+         dateStr[7] == '-' &&
+         isDigit(dateStr[8]) &&
+         isDigit(dateStr[9]) &&
+         dateStr[10] == 'T' &&
+         isDigit(dateStr[11]) &&
+         isDigit(dateStr[12]) &&
+         dateStr[13] == ':' &&
+         isDigit(dateStr[14]) &&
+         isDigit(dateStr[15]) &&
+         dateStr[16] == ':' &&
+         isDigit(dateStr[17]) &&
+         isDigit(dateStr[18]) &&
+         (dateStr[19] == '+' || dateStr[19] == '-') &&
+         isDigit(dateStr[20]) &&
+         isDigit(dateStr[21]) &&
+         dateStr[22] == ':' &&
+         isDigit(dateStr[23]) &&
+         isDigit(dateStr[24]);
+}
+
+bool ParseDateTimeResponse(const String& dateStr, struct tm& out, int32_t& utcOffsetSeconds) {
+  if (!IsDateStringValid(dateStr)) return false;
+
+  memset(&out, 0, sizeof(out));
+  out.tm_year = dateStr.substring(0, 4).toInt() - 1900;
+  out.tm_mon = dateStr.substring(5, 7).toInt() - 1;
+  out.tm_mday = dateStr.substring(8, 10).toInt();
+  out.tm_hour = dateStr.substring(11, 13).toInt();
+  out.tm_min = dateStr.substring(14, 16).toInt();
+  out.tm_sec = dateStr.substring(17, 19).toInt();
+
+  const int offsetHours = dateStr.substring(20, 22).toInt();
+  const int offsetMinutes = dateStr.substring(23, 25).toInt();
+  utcOffsetSeconds = (offsetHours * 60 + offsetMinutes) * 60;
+  if (dateStr[19] == '-') utcOffsetSeconds = -utcOffsetSeconds;
+
+  return true;
 }
 
 }  // namespace
@@ -107,7 +156,7 @@ void WifiManager::Poll(NotifyFn notify) {
       Serial.printf("WiFi: connected to \"%s\" IP=%s\n",
                     ssid_, WiFi.localIP().toString().c_str());
 
-      // Fetch time via HTTP.
+      // Sync local clock from the date service.
       CheckTimeSync();
 
       // Save to NVS.
@@ -128,6 +177,8 @@ void WifiManager::Poll(NotifyFn notify) {
     wl_status_t ws = WiFi.status();
     if (ws == WL_CONNECTION_LOST || ws == WL_DISCONNECTED) {
       RetryConnect(notify, ws, "connection lost");
+    } else {
+      CheckTimeSync();
     }
   }
 }
@@ -169,6 +220,10 @@ void WifiManager::StartConnect(const char* ssid, const char* pass,
   ssid_[sizeof(ssid_) - 1] = '\0';
   strncpy(pass_, pass, sizeof(pass_) - 1);
   pass_[sizeof(pass_) - 1] = '\0';
+  timeSynced_ = false;
+  utcOffsetSeconds_ = 0;
+  lastTimeSyncMs_ = 0;
+  lastTimeSyncAttemptMs_ = 0;
 
   Serial.printf("WiFi: connecting to \"%s\"...\n", ssid_);
   WiFi.begin(ssid_, pass_);
@@ -184,6 +239,10 @@ void WifiManager::Clear(NotifyFn notify) {
   pass_[0] = '\0';
   status_ = WifiStatus::kIdle;
   connectPending_ = false;
+  timeSynced_ = false;
+  utcOffsetSeconds_ = 0;
+  lastTimeSyncMs_ = 0;
+  lastTimeSyncAttemptMs_ = 0;
 
   Preferences prefs;
   prefs.begin(config::kNvsNamespace, false);
@@ -227,84 +286,67 @@ void WifiManager::SendStatus(NotifyFn notify) {
   if (len > 0) notify(buf, len);
 }
 
-// Parse HTTP Date header: "Sat, 02 May 2026 15:30:00 GMT"
-static bool ParseHttpDate(const char* dateStr, struct tm& out) {
-  static const char* months[] = {
-    "Jan", "Feb", "Mar", "Apr", "May", "Jun",
-    "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"
-  };
-
-  // Skip day name — find first space after comma.
-  const char* p = strchr(dateStr, ',');
-  if (!p) return false;
-  p++;  // skip comma
-  while (*p == ' ') p++;
-
-  int day, year, hour, min, sec;
-  char monStr[4] = {};
-  if (sscanf(p, "%d %3s %d %d:%d:%d",
-             &day, monStr, &year, &hour, &min, &sec) != 6) {
-    return false;
-  }
-
-  int mon = -1;
-  for (int i = 0; i < 12; i++) {
-    if (strcmp(monStr, months[i]) == 0) { mon = i; break; }
-  }
-  if (mon < 0) return false;
-
-  memset(&out, 0, sizeof(out));
-  out.tm_year = year - 1900;
-  out.tm_mon = mon;
-  out.tm_mday = day;
-  out.tm_hour = hour;
-  out.tm_min = min;
-  out.tm_sec = sec;
-  return true;
-}
-
 void WifiManager::CheckTimeSync() {
-  if (timeSynced_) return;
+  const unsigned long nowMs = millis();
+  const bool syncStale =
+      !timeSynced_ || (nowMs - lastTimeSyncMs_ >= kTimeSyncRefreshMs);
+  if (!syncStale) return;
 
-  // Raw TCP connection — avoids pulling in HTTPClient/TLS.
-  WiFiClient client;
-  if (!client.connect("www.google.com", 80, 5000)) {
-    Serial.println("WiFi: time sync connect failed");
+  if (lastTimeSyncAttemptMs_ != 0 &&
+      nowMs - lastTimeSyncAttemptMs_ < kTimeSyncRetryMs) {
+    return;
+  }
+  lastTimeSyncAttemptMs_ = nowMs;
+
+  WiFiClientSecure client;
+  client.setInsecure();
+
+  HTTPClient http;
+  http.setConnectTimeout(5000);
+  http.setTimeout(5000);
+
+  if (!http.begin(client, config::kTimeSyncUrl)) {
+    Serial.println("WiFi: time sync HTTPS setup failed");
     return;
   }
 
-  client.print("HEAD / HTTP/1.1\r\nHost: www.google.com\r\nConnection: close\r\n\r\n");
-
-  // Read response headers looking for Date.
-  unsigned long start = millis();
-  while (client.connected() && millis() - start < 5000) {
-    String line = client.readStringUntil('\n');
-    line.trim();
-    if (line.length() == 0) break;  // end of headers
-
-    if (line.startsWith("Date: ")) {
-      struct tm timeinfo;
-      if (ParseHttpDate(line.c_str() + 6, timeinfo)) {
-        time_t t = mktime(&timeinfo);
-        struct timeval tv = {.tv_sec = t, .tv_usec = 0};
-        settimeofday(&tv, nullptr);
-
-        timeSynced_ = true;
-        char buf[11];
-        strftime(buf, sizeof(buf), "%Y/%m/%d", &timeinfo);
-        Serial.printf("WiFi: time synced via HTTP: %s\n", buf);
-      } else {
-        Serial.printf("WiFi: failed to parse Date: %s\n", line.c_str() + 6);
-      }
-      break;
-    }
+  int status = http.GET();
+  if (status != HTTP_CODE_OK) {
+    Serial.printf("WiFi: time sync HTTPS GET failed (%d)\n", status);
+    http.end();
+    return;
   }
-  client.stop();
+
+  String body = http.getString();
+  http.end();
+  body.trim();
+
+  struct tm timeinfo;
+  int32_t utcOffsetSeconds = 0;
+  if (!ParseDateTimeResponse(body, timeinfo, utcOffsetSeconds)) {
+    Serial.printf("WiFi: invalid datetime response: %s\n", body.c_str());
+    return;
+  }
+
+  time_t t = mktime(&timeinfo);
+  if (t < 0) {
+    Serial.println("WiFi: failed to convert datetime response");
+    return;
+  }
+
+  t -= utcOffsetSeconds;
+  struct timeval tv = {.tv_sec = t, .tv_usec = 0};
+  settimeofday(&tv, nullptr);
+
+  utcOffsetSeconds_ = utcOffsetSeconds;
+  timeSynced_ = true;
+  lastTimeSyncMs_ = nowMs;
+  Serial.printf("WiFi: time synced via HTTPS: %s\n", body.c_str());
 }
 
 bool WifiManager::GetDateString(char* buf, size_t cap) const {
   if (!timeSynced_ || cap < 11) return false;
-  time_t now = time(nullptr);
+  time_t now = time(nullptr) + utcOffsetSeconds_;
   struct tm timeinfo;
   gmtime_r(&now, &timeinfo);
   strftime(buf, cap, "%Y/%m/%d", &timeinfo);

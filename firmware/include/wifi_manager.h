@@ -42,8 +42,13 @@ class WifiManager {
   bool scanning_ = false;
   bool connectPending_ = false;
   bool timeSynced_ = false;
+  int32_t utcOffsetSeconds_ = 0;
+  unsigned long lastTimeSyncMs_ = 0;
+  unsigned long lastTimeSyncAttemptMs_ = 0;
   unsigned long connectStartMs_ = 0;
   static constexpr unsigned long kConnectTimeoutMs = 15000;
+  static constexpr unsigned long kTimeSyncRefreshMs = 12UL * 60UL * 60UL * 1000UL;
+  static constexpr unsigned long kTimeSyncRetryMs = 60UL * 1000UL;
 };
 
 }  // namespace date_label

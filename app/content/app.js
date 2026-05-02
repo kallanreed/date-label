@@ -493,7 +493,7 @@ async function loadPreview() {
     if (ui.timeStatus) {
       ui.timeStatus.textContent = time.synced
         ? `Time synced: ${time.date}`
-        : "Time not synced (waiting for NTP)";
+        : "Time not synced (waiting for date service)";
     }
 
     if (!time.synced) {
