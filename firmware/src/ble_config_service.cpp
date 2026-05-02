@@ -1,6 +1,7 @@
 #include "ble_config_service.h"
 
 #include <Arduino.h>
+#include <cctype>
 
 #include "app_config.h"
 #include "config_protocol.h"
@@ -13,6 +14,28 @@ constexpr size_t kBitmapChunkSafetyLimit = 200;
 constexpr unsigned long kBitmapChunkDelayMs = 30;
 constexpr unsigned long kNotifyRetryDelayMs = 75;
 constexpr unsigned long kIndicationAckTimeoutMs = 1500;
+constexpr uint32_t kPrinterScanDurationMs = 10000;
+constexpr size_t kPrinterAddressCap = 32;
+
+bool ContainsIgnoreCase(const std::string& text, const char* needle) {
+  if (needle == nullptr || needle[0] == '\0') return false;
+
+  size_t match = 0;
+  for (char ch : text) {
+    if (std::tolower(static_cast<unsigned char>(ch)) ==
+        std::tolower(static_cast<unsigned char>(needle[match]))) {
+      match++;
+      if (needle[match] == '\0') return true;
+    } else {
+      match = std::tolower(static_cast<unsigned char>(ch)) ==
+                  std::tolower(static_cast<unsigned char>(needle[0]))
+          ? 1
+          : 0;
+    }
+  }
+
+  return false;
+}
 
 // ── NimBLE callbacks ─────────────────────────────────────────────────────
 
@@ -58,6 +81,22 @@ class ConfigNotifyCallbacks : public NimBLECharacteristicCallbacks {
   BleConfigService& svc_;
 };
 
+class PrinterScanCallbacks : public ::NimBLEScanCallbacks {
+ public:
+  explicit PrinterScanCallbacks(BleConfigService& svc) : svc_(svc) {}
+
+  void onResult(const ::NimBLEAdvertisedDevice* advertisedDevice) override {
+    svc_.HandlePrinterScanResult(advertisedDevice);
+  }
+
+  void onScanEnd(const ::NimBLEScanResults&, int reason) override {
+    svc_.HandlePrinterScanEnd(reason);
+  }
+
+ private:
+  BleConfigService& svc_;
+};
+
 // ── Public ───────────────────────────────────────────────────────────────
 
 void BleConfigService::Begin(WifiManager& wifi) {
@@ -82,6 +121,15 @@ void BleConfigService::Begin(WifiManager& wifi) {
       NIMBLE_PROPERTY::NOTIFY | NIMBLE_PROPERTY::INDICATE);
   notifyChar_->setCallbacks(new ConfigNotifyCallbacks(*this));
 
+  printerScan_ = NimBLEDevice::getScan();
+  printerScan_->setActiveScan(true);
+  printerScan_->setInterval(45);
+  printerScan_->setWindow(30);
+  printerScan_->setMaxResults(0);
+  printerScan_->setDuplicateFilter(1);
+  printerScanCallbacks_ = new PrinterScanCallbacks(*this);
+  printerScan_->setScanCallbacks(printerScanCallbacks_, false);
+
   server_->start();
 
   NimBLEAdvertising* adv = NimBLEDevice::getAdvertising();
@@ -97,6 +145,7 @@ void BleConfigService::Poll() {
   if (wifi_ != nullptr) {
     wifi_->Poll(StaticNotify);
   }
+  ContinuePrintJob();
   ContinueBitmapTransfer();
 }
 
@@ -113,6 +162,12 @@ void BleConfigService::HandleDisconnect() {
   connected_ = false;
   connHandle_ = BLE_HS_CONN_HANDLE_NONE;
   peerMtu_ = 23;
+  if (printerScan_ != nullptr && printerScan_->isScanning()) {
+    printerScan_->stop();
+  }
+  printerScanActive_ = false;
+  printerScanCount_ = 0;
+  printerSeenAddresses_.clear();
   ResetBitmapTransfer();
   Serial.println("BLE: client disconnected");
   NimBLEDevice::getAdvertising()->start();
@@ -234,6 +289,49 @@ void BleConfigService::HandleWrite(const uint8_t* data, size_t length) {
       break;
     }
 
+    case CmdType::kPrinterScan:
+      StartPrinterScan();
+      break;
+
+    case CmdType::kPrinterBind: {
+      char address[kPrinterAddressCap] = {};
+      if (!ParsePrinterBind(payload, header.payloadLength, address, sizeof(address))) {
+        size_t len = EncodeError(header.type, ErrorCode::kMalformedPayload,
+                                 buf, sizeof(buf));
+        if (len > 0) Notify(buf, len);
+        return;
+      }
+
+      if (!SavePrinterAddress(address)) {
+        size_t len = EncodeError(header.type, ErrorCode::kNvsFailure,
+                                 buf, sizeof(buf));
+        if (len > 0) Notify(buf, len);
+        return;
+      }
+
+      size_t len = EncodeAck(header.type, buf, sizeof(buf));
+      if (len > 0) Notify(buf, len);
+      break;
+    }
+
+    case CmdType::kPrinterGetSaved: {
+      char address[kPrinterAddressCap] = {};
+      bool haveSaved = LoadPrinterAddress(address, sizeof(address));
+      size_t len = EncodePrinterSaved(haveSaved ? address : nullptr, buf, sizeof(buf));
+      if (len > 0) Notify(buf, len);
+      break;
+    }
+
+    case CmdType::kPrintLabel:
+      if (printRequested_) {
+        size_t len = EncodeError(header.type, ErrorCode::kOperationFailed,
+                                 buf, sizeof(buf));
+        if (len > 0) Notify(buf, len);
+      } else {
+        printRequested_ = true;
+      }
+      break;
+
     default: {
       size_t len = EncodeError(header.type, ErrorCode::kUnknownCommand,
                                buf, sizeof(buf));
@@ -311,6 +409,124 @@ void BleConfigService::ContinueBitmapTransfer() {
   bitmapOffset_ += chunk;
   bitmapAwaitingAck_ = true;
   bitmapAckDeadlineMs_ = millis() + kIndicationAckTimeoutMs;
+}
+
+void BleConfigService::ContinuePrintJob() {
+  if (!printRequested_ || wifi_ == nullptr) return;
+
+  printRequested_ = false;
+  const PrinterManager::PrintResult result = printerManager_.PrintCurrentDate(*wifi_);
+
+  uint8_t buf[kMaxMsgSize];
+  size_t len = 0;
+  switch (result) {
+    case PrinterManager::PrintResult::kOk:
+      len = EncodeAck(static_cast<uint8_t>(CmdType::kPrintLabel), buf, sizeof(buf));
+      break;
+    case PrinterManager::PrintResult::kPrinterNotConfigured:
+      len = EncodeError(static_cast<uint8_t>(CmdType::kPrintLabel),
+                        ErrorCode::kPrinterNotConfigured, buf, sizeof(buf));
+      break;
+    case PrinterManager::PrintResult::kTimeNotSynced:
+      len = EncodeError(static_cast<uint8_t>(CmdType::kPrintLabel),
+                        ErrorCode::kTimeNotSynced, buf, sizeof(buf));
+      break;
+    case PrinterManager::PrintResult::kRenderFailed:
+      len = EncodeError(static_cast<uint8_t>(CmdType::kPrintLabel),
+                        ErrorCode::kRenderFailed, buf, sizeof(buf));
+      break;
+    case PrinterManager::PrintResult::kConnectionFailed:
+    case PrinterManager::PrintResult::kServiceMissing:
+    case PrinterManager::PrintResult::kWriteFailed:
+      len = EncodeError(static_cast<uint8_t>(CmdType::kPrintLabel),
+                        ErrorCode::kPrintFailed, buf, sizeof(buf));
+      break;
+  }
+
+  if (len > 0) Notify(buf, len);
+}
+
+void BleConfigService::StartPrinterScan() {
+  if (printerScan_ == nullptr) {
+    uint8_t buf[kMaxMsgSize];
+    size_t len = EncodeError(static_cast<uint8_t>(CmdType::kPrinterScan),
+                             ErrorCode::kOperationFailed, buf, sizeof(buf));
+    if (len > 0) Notify(buf, len);
+    return;
+  }
+
+  if (printerScanActive_ || printerScan_->isScanning()) {
+    uint8_t buf[kMaxMsgSize];
+    size_t len = EncodeError(static_cast<uint8_t>(CmdType::kPrinterScan),
+                             ErrorCode::kScanInProgress, buf, sizeof(buf));
+    if (len > 0) Notify(buf, len);
+    return;
+  }
+
+  printerScanCount_ = 0;
+  printerSeenAddresses_.clear();
+  printerScan_->clearResults();
+  printerScanActive_ = true;
+
+  Serial.println("BLE: starting printer scan...");
+  if (!printerScan_->start(kPrinterScanDurationMs, false, true)) {
+    printerScanActive_ = false;
+    uint8_t buf[kMaxMsgSize];
+    size_t len = EncodeError(static_cast<uint8_t>(CmdType::kPrinterScan),
+                             ErrorCode::kOperationFailed, buf, sizeof(buf));
+    if (len > 0) Notify(buf, len);
+  }
+}
+
+void BleConfigService::HandlePrinterScanResult(const ::NimBLEAdvertisedDevice* device) {
+  if (!printerScanActive_ || device == nullptr) return;
+
+  const ::NimBLEUUID printerServiceUuid(config::kPrinterServiceUuid);
+  const bool isPrinterService = device->isAdvertisingService(printerServiceUuid);
+  const std::string name = device->getName();
+  if (!isPrinterService && !ContainsIgnoreCase(name, "D12")) return;
+
+  const std::string address = device->getAddress().toString();
+  for (const std::string& seenAddress : printerSeenAddresses_) {
+    if (seenAddress == address) return;
+  }
+
+  printerSeenAddresses_.push_back(address);
+  if (printerScanCount_ < 255) {
+    printerScanCount_++;
+  }
+
+  const char* printerName = name.empty() ? "D12" : name.c_str();
+  uint8_t buf[kMaxMsgSize];
+  size_t len = EncodePrinterScanResult(printerName, address.c_str(), buf, sizeof(buf));
+  if (len > 0) Notify(buf, len);
+}
+
+void BleConfigService::HandlePrinterScanEnd(int reason) {
+  if (!printerScanActive_) return;
+
+  printerScanActive_ = false;
+  Serial.printf("BLE: printer scan complete reason=%d results=%u\n",
+                reason, printerScanCount_);
+
+  uint8_t buf[kMaxMsgSize];
+  size_t len = EncodePrinterScanDone(printerScanCount_, buf, sizeof(buf));
+  if (len > 0) Notify(buf, len);
+  if (printerScan_ != nullptr) {
+    printerScan_->clearResults();
+  }
+}
+
+bool BleConfigService::LoadPrinterAddress(char* address, size_t cap) const {
+  return printerManager_.LoadAddress(address, cap);
+}
+
+bool BleConfigService::SavePrinterAddress(const char* address) {
+  const bool saved = printerManager_.SaveAddress(address);
+  if (saved) {
+    Serial.printf("BLE: saved printer address %s\n", address);
+  }
+  return saved;
 }
 
 void BleConfigService::ResetBitmapTransfer() {

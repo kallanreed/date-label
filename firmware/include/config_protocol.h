@@ -14,6 +14,10 @@ enum class CmdType : uint8_t {
   kWifiClear = 0x05,
   kGetTimeStatus = 0x06,
   kGetDateBitmap = 0x07,
+  kPrinterScan = 0x08,
+  kPrinterBind = 0x09,
+  kPrinterGetSaved = 0x0A,
+  kPrintLabel = 0x0B,
 };
 
 // ── Response types (ESP32 → SPA, 0x80-0xFF) ──────────────────────────────
@@ -27,6 +31,9 @@ enum class RspType : uint8_t {
   kTimeStatus = 0x87,
   kDateBitmapHeader = 0x88,
   kDateBitmapData = 0x89,
+  kPrinterScanResult = 0x8A,
+  kPrinterScanDone = 0x8B,
+  kPrinterSaved = 0x8C,
 };
 
 enum class WifiStatus : uint8_t {
@@ -45,6 +52,9 @@ enum class ErrorCode : uint8_t {
   kNvsFailure = 0x05,
   kTimeNotSynced = 0x06,
   kRenderFailed = 0x07,
+  kOperationFailed = 0x08,
+  kPrinterNotConfigured = 0x09,
+  kPrintFailed = 0x0A,
 };
 
 struct MsgHeader {
@@ -61,6 +71,9 @@ bool ParseHeader(const uint8_t* data, size_t len, MsgHeader& header);
 bool ParseWifiConnect(const uint8_t* payload, size_t len,
                       char* ssid, size_t ssidCap,
                       char* pass, size_t passCap);
+
+bool ParsePrinterBind(const uint8_t* payload, size_t len,
+                      char* address, size_t addressCap);
 
 size_t EncodeScanResult(int8_t rssi, const char* ssid,
                         uint8_t* out, size_t cap);
@@ -86,5 +99,12 @@ size_t EncodeBitmapHeader(uint16_t width, uint16_t height,
 
 size_t EncodeBitmapData(const uint8_t* data, size_t dataLen,
                         uint8_t* out, size_t cap);
+
+size_t EncodePrinterScanResult(const char* name, const char* address,
+                               uint8_t* out, size_t cap);
+
+size_t EncodePrinterScanDone(uint8_t count, uint8_t* out, size_t cap);
+
+size_t EncodePrinterSaved(const char* address, uint8_t* out, size_t cap);
 
 }  // namespace date_label

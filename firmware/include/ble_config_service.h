@@ -3,8 +3,12 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <string>
+#include <vector>
+
 #include <NimBLEDevice.h>
 
+#include "printer_manager.h"
 #include "wifi_manager.h"
 
 namespace date_label {
@@ -12,6 +16,7 @@ namespace date_label {
 class ConfigServerCallbacks;
 class ConfigWriteCallbacks;
 class ConfigNotifyCallbacks;
+class PrinterScanCallbacks;
 
 class BleConfigService {
  public:
@@ -22,6 +27,7 @@ class BleConfigService {
   friend class ConfigServerCallbacks;
   friend class ConfigWriteCallbacks;
   friend class ConfigNotifyCallbacks;
+  friend class PrinterScanCallbacks;
 
   void HandleConnect(const NimBLEConnInfo& connInfo);
   void HandleDisconnect();
@@ -30,6 +36,12 @@ class BleConfigService {
   bool Notify(const uint8_t* data, size_t length, bool requireAck = false);
   void ContinueBitmapTransfer();
   void ResetBitmapTransfer();
+  void StartPrinterScan();
+  void HandlePrinterScanResult(const ::NimBLEAdvertisedDevice* device);
+  void HandlePrinterScanEnd(int reason);
+  bool LoadPrinterAddress(char* address, size_t cap) const;
+  bool SavePrinterAddress(const char* address);
+  void ContinuePrintJob();
 
   static void StaticNotify(const uint8_t* data, size_t length);
 
@@ -51,6 +63,13 @@ class BleConfigService {
   bool bitmapAwaitingAck_ = false;
   unsigned long bitmapAckDeadlineMs_ = 0;
   unsigned long bitmapNextSendMs_ = 0;
+  ::NimBLEScan* printerScan_ = nullptr;
+  ::NimBLEScanCallbacks* printerScanCallbacks_ = nullptr;
+  bool printerScanActive_ = false;
+  uint8_t printerScanCount_ = 0;
+  std::vector<std::string> printerSeenAddresses_;
+  PrinterManager printerManager_;
+  bool printRequested_ = false;
 
   static BleConfigService* instance_;
 };

@@ -33,6 +33,14 @@ bool ParseWifiConnect(const uint8_t* payload, size_t len,
   return true;
 }
 
+bool ParsePrinterBind(const uint8_t* payload, size_t len,
+                      char* address, size_t addressCap) {
+  if (payload == nullptr || len == 0 || len >= addressCap) return false;
+  memcpy(address, payload, len);
+  address[len] = '\0';
+  return true;
+}
+
 // ── Encode helpers ───────────────────────────────────────────────────────
 
 static size_t WriteHeader(uint8_t type, uint8_t payloadLen,
@@ -167,6 +175,52 @@ size_t EncodeBitmapData(const uint8_t* data, size_t dataLen,
   WriteHeader(static_cast<uint8_t>(RspType::kDateBitmapData), payloadLen,
               out, cap);
   memcpy(out + kMsgHeaderSize, data, dataLen);
+  return total;
+}
+
+size_t EncodePrinterScanResult(const char* name, const char* address,
+                               uint8_t* out, size_t cap) {
+  if (name == nullptr || address == nullptr) return 0;
+
+  size_t nameLen = strlen(name);
+  size_t addressLen = strlen(address);
+  uint8_t payloadLen = static_cast<uint8_t>(nameLen + 1 + addressLen);
+  size_t total = kMsgHeaderSize + payloadLen;
+  if (cap < total || payloadLen > kMaxPayload) return 0;
+
+  WriteHeader(static_cast<uint8_t>(RspType::kPrinterScanResult), payloadLen,
+              out, cap);
+  memcpy(out + 2, name, nameLen);
+  out[2 + nameLen] = '\0';
+  memcpy(out + 3 + nameLen, address, addressLen);
+  return total;
+}
+
+size_t EncodePrinterScanDone(uint8_t count, uint8_t* out, size_t cap) {
+  constexpr uint8_t payloadLen = 1;
+  constexpr size_t total = kMsgHeaderSize + payloadLen;
+  if (cap < total) return 0;
+
+  WriteHeader(static_cast<uint8_t>(RspType::kPrinterScanDone), payloadLen,
+              out, cap);
+  out[2] = count;
+  return total;
+}
+
+size_t EncodePrinterSaved(const char* address, uint8_t* out, size_t cap) {
+  if (address == nullptr || address[0] == '\0') {
+    if (cap < kMsgHeaderSize) return 0;
+    WriteHeader(static_cast<uint8_t>(RspType::kPrinterSaved), 0, out, cap);
+    return kMsgHeaderSize;
+  }
+
+  size_t addressLen = strlen(address);
+  uint8_t payloadLen = static_cast<uint8_t>(addressLen);
+  size_t total = kMsgHeaderSize + payloadLen;
+  if (cap < total || payloadLen > kMaxPayload) return 0;
+
+  WriteHeader(static_cast<uint8_t>(RspType::kPrinterSaved), payloadLen, out, cap);
+  memcpy(out + 2, address, addressLen);
   return total;
 }
 

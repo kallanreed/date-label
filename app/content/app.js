@@ -12,6 +12,10 @@ const CMD = {
   WIFI_CLEAR: 0x05,
   GET_TIME_STATUS: 0x06,
   GET_DATE_BITMAP: 0x07,
+  PRINTER_SCAN: 0x08,
+  PRINTER_BIND: 0x09,
+  PRINTER_GET_SAVED: 0x0A,
+  PRINT_LABEL: 0x0B,
 };
 
 const RSP = {
@@ -24,6 +28,9 @@ const RSP = {
   TIME_STATUS: 0x87,
   DATE_BITMAP_HEADER: 0x88,
   DATE_BITMAP_DATA: 0x89,
+  PRINTER_SCAN_RESULT: 0x8A,
+  PRINTER_SCAN_DONE: 0x8B,
+  PRINTER_SAVED: 0x8C,
 };
 
 const WIFI_STATUS_NAME = {
@@ -42,6 +49,9 @@ const ERROR_NAME = {
   0x05: "NVS failure",
   0x06: "Time not synced",
   0x07: "Render failed",
+  0x08: "Operation failed",
+  0x09: "No printer bound",
+  0x0A: "Print failed",
 };
 
 const SCAN_TIMEOUT_MS = 15000;
@@ -63,8 +73,15 @@ const state = {
     networks: [],
     scanning: false,
   },
+  printer: {
+    scanning: false,
+    devices: [],
+    selectedAddress: "",
+    boundAddress: "",
+  },
   preview: {
     loading: false,
+    printing: false,
   },
 };
 
@@ -115,6 +132,10 @@ function encodeWifiConnect(ssid, password) {
   return payload;
 }
 
+function encodeText(value) {
+  return new TextEncoder().encode(value);
+}
+
 // ── BLE connection ──────────────────────────────────────────────────────
 
 function setBleStatus(message) {
@@ -162,6 +183,12 @@ function handleGattDisconnected() {
   state.ble.connected = false;
   state.ble.handler = null;
   state.ble.commandChain = Promise.resolve();
+  state.wifi.networks = [];
+  state.wifi.scanning = false;
+  state.printer.devices = [];
+  state.printer.scanning = false;
+  state.printer.selectedAddress = "";
+  state.printer.boundAddress = "";
   setBleStatus("Disconnected.");
   updateUI();
 }
@@ -194,6 +221,7 @@ async function connectBle() {
   updateUI();
 
   await getWifiStatus();
+  await getSavedPrinter();
   await loadPreview();
 }
 
@@ -254,6 +282,40 @@ function getWifiStatus() {
   });
 }
 
+function getSavedPrinter() {
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      state.ble.handler = null;
+      reject(new Error("Timed out."));
+    }, 5000);
+
+    state.ble.handler = (msg) => {
+      if (msg.type === RSP.PRINTER_SAVED) {
+        clearTimeout(timeout);
+        state.ble.handler = null;
+        state.printer.boundAddress = msg.payload.length
+          ? new TextDecoder().decode(msg.payload)
+          : "";
+        updatePrinterUI();
+        resolve(state.printer.boundAddress);
+      } else if (msg.type === RSP.ERROR) {
+        clearTimeout(timeout);
+        state.ble.handler = null;
+        const code = msg.payload.length > 1 ? msg.payload[1] : 0;
+        reject(new Error(ERROR_NAME[code] || `Error 0x${code.toString(16)}`));
+      } else if (msg.type === RSP.WIFI_STATUS) {
+        handleWifiStatusMsg(msg.payload);
+      }
+    };
+
+    writeCmd(CMD.PRINTER_GET_SAVED).catch((err) => {
+      clearTimeout(timeout);
+      state.ble.handler = null;
+      reject(err);
+    });
+  });
+}
+
 // ── WiFi scan ───────────────────────────────────────────────────────────
 
 function scanWifi() {
@@ -294,6 +356,118 @@ function scanWifi() {
       state.ble.handler = null;
       state.wifi.scanning = false;
       updateUI();
+      reject(err);
+    });
+  });
+}
+
+// ── Printer setup ────────────────────────────────────────────────────────
+
+function scanPrinters() {
+  return new Promise((resolve, reject) => {
+    const devices = [];
+    const timeout = setTimeout(() => {
+      state.ble.handler = null;
+      state.printer.scanning = false;
+      updateUI();
+      reject(new Error("Scan timed out."));
+    }, SCAN_TIMEOUT_MS);
+
+    state.ble.handler = (msg) => {
+      if (msg.type === RSP.PRINTER_SCAN_RESULT) {
+        const text = new TextDecoder().decode(msg.payload);
+        const sep = text.indexOf("\0");
+        if (sep !== -1) {
+          devices.push({
+            name: text.slice(0, sep) || "D12",
+            address: text.slice(sep + 1),
+          });
+        }
+      } else if (msg.type === RSP.PRINTER_SCAN_DONE) {
+        clearTimeout(timeout);
+        state.ble.handler = null;
+        state.printer.scanning = false;
+        updateUI();
+        resolve(devices);
+      } else if (msg.type === RSP.ERROR) {
+        clearTimeout(timeout);
+        state.ble.handler = null;
+        state.printer.scanning = false;
+        updateUI();
+        const code = msg.payload.length > 1 ? msg.payload[1] : 0;
+        reject(new Error(ERROR_NAME[code] || `Error 0x${code.toString(16)}`));
+      } else if (msg.type === RSP.WIFI_STATUS) {
+        handleWifiStatusMsg(msg.payload);
+      }
+    };
+
+    state.printer.scanning = true;
+    updateUI();
+    writeCmd(CMD.PRINTER_SCAN).catch((err) => {
+      clearTimeout(timeout);
+      state.ble.handler = null;
+      state.printer.scanning = false;
+      updateUI();
+      reject(err);
+    });
+  });
+}
+
+function bindPrinter(address) {
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      state.ble.handler = null;
+      reject(new Error("Bind timed out."));
+    }, 5000);
+
+    state.ble.handler = (msg) => {
+      if (msg.type === RSP.ACK && msg.payload[0] === CMD.PRINTER_BIND) {
+        clearTimeout(timeout);
+        state.ble.handler = null;
+        resolve();
+      } else if (msg.type === RSP.ERROR) {
+        clearTimeout(timeout);
+        state.ble.handler = null;
+        const code = msg.payload.length > 1 ? msg.payload[1] : 0;
+        reject(new Error(ERROR_NAME[code] || `Error 0x${code.toString(16)}`));
+      } else if (msg.type === RSP.WIFI_STATUS) {
+        handleWifiStatusMsg(msg.payload);
+      }
+    };
+
+    writeCmd(CMD.PRINTER_BIND, encodeText(address)).catch((err) => {
+      clearTimeout(timeout);
+      state.ble.handler = null;
+      reject(err);
+    });
+  });
+}
+
+function printLabel() {
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      state.ble.handler = null;
+      reject(new Error("Print timed out."));
+    }, 30000);
+
+    state.ble.handler = (msg) => {
+      if (msg.type === RSP.ACK && msg.payload[0] === CMD.PRINT_LABEL) {
+        clearTimeout(timeout);
+        state.ble.handler = null;
+        resolve();
+      } else if (msg.type === RSP.ERROR) {
+        clearTimeout(timeout);
+        state.ble.handler = null;
+        const code = msg.payload.length > 1 ? msg.payload[1] : 0;
+        reject(new Error(ERROR_NAME[code] || `Error 0x${code.toString(16)}`));
+      } else if (msg.type === RSP.WIFI_STATUS) {
+        handleWifiStatusMsg(msg.payload);
+      }
+    };
+
+    writeCmd(CMD.PRINT_LABEL).catch((err) => {
+      clearTimeout(timeout);
+      state.ble.handler = null;
       reject(err);
     });
   });
@@ -550,6 +724,7 @@ async function loadPreview() {
   if (!state.ble.connected || state.preview.loading) return;
 
   state.preview.loading = true;
+  updateUI();
 
   try {
     if (ui.timeStatus) ui.timeStatus.textContent = "Checking time...";
@@ -576,6 +751,7 @@ async function loadPreview() {
     if (ui.bitmapStatus) ui.bitmapStatus.textContent = `Error: ${err.message}`;
   } finally {
     state.preview.loading = false;
+    updateUI();
   }
 }
 
@@ -584,6 +760,24 @@ function updateWifiUI() {
     const name = WIFI_STATUS_NAME[state.wifi.status] || "Unknown";
     const ssid = state.wifi.ssid ? ` (${state.wifi.ssid})` : "";
     ui.wifiStatusText.textContent = `${name}${ssid}`;
+  }
+}
+
+function updatePrinterUI() {
+  if (ui.printerStatus) {
+    if (state.printer.scanning) {
+      ui.printerStatus.textContent = "Scanning...";
+    } else if (state.printer.boundAddress) {
+      ui.printerStatus.textContent = `Saved printer: ${state.printer.boundAddress}`;
+    } else {
+      ui.printerStatus.textContent = "No printer bound.";
+    }
+  }
+
+  if (ui.printerSelection) {
+    ui.printerSelection.textContent = state.printer.selectedAddress
+      ? `Selected: ${state.printer.selectedAddress}`
+      : "Select a printer from the scan results.";
   }
 }
 
@@ -597,9 +791,21 @@ function updateUI() {
   const connected = state.ble.connected;
   if (ui.scanBtn) ui.scanBtn.disabled = !connected || state.wifi.scanning;
   if (ui.wifiConnectBtn) ui.wifiConnectBtn.disabled = !connected;
+  if (ui.printerScanBtn) ui.printerScanBtn.disabled = !connected || state.printer.scanning;
+  if (ui.printerBindBtn) {
+    ui.printerBindBtn.disabled =
+      !connected || state.printer.scanning || !state.printer.selectedAddress;
+  }
   if (ui.clearBtn) ui.clearBtn.disabled = !connected;
   if (ui.loadSavedBtn) ui.loadSavedBtn.disabled = !connected;
   if (ui.reloadBitmapBtn) ui.reloadBitmapBtn.disabled = !connected;
+  if (ui.printBtn) {
+    ui.printBtn.disabled =
+      !connected ||
+      state.preview.loading ||
+      state.preview.printing ||
+      !state.printer.boundAddress;
+  }
 
   if (!state.ble.supported) {
     setBleStatus("Web Bluetooth is not available in this browser.");
@@ -608,6 +814,7 @@ function updateUI() {
   }
 
   updateWifiUI();
+  updatePrinterUI();
 }
 
 function renderNetworkList(networks) {
@@ -624,7 +831,7 @@ function renderNetworkList(networks) {
     `;
     item.addEventListener("click", () => {
       if (ui.ssidInput) ui.ssidInput.value = net.ssid;
-      document.querySelectorAll(".network-item.selected")
+      document.querySelectorAll("#network-list .network-item.selected")
         .forEach((el) => el.classList.remove("selected"));
       item.classList.add("selected");
     });
@@ -632,19 +839,57 @@ function renderNetworkList(networks) {
   }
 }
 
+function renderPrinterList(devices) {
+  if (!ui.printerList) return;
+  ui.printerList.innerHTML = "";
+
+  for (const printer of devices) {
+    const item = document.createElement("div");
+    item.className = "network-item";
+    item.innerHTML = `
+      <span class="network-ssid">${printer.name || "D12"}</span>
+      <span class="network-rssi">${printer.address}</span>
+    `;
+    item.addEventListener("click", () => {
+      state.printer.selectedAddress = printer.address;
+      document.querySelectorAll("#printer-list .network-item.selected")
+        .forEach((el) => el.classList.remove("selected"));
+      item.classList.add("selected");
+      updateUI();
+    });
+    if (printer.address === state.printer.selectedAddress) {
+      item.classList.add("selected");
+    }
+    ui.printerList.appendChild(item);
+  }
+}
+
 function renderApp(root) {
   root.innerHTML = `
     <main class="layout">
-      <section class="card">
-        <h2>Device</h2>
+      <header class="page-header">
+        <p class="eyebrow">Date Label Setup</p>
+        <h1>Configure and test the printer flow</h1>
+        <p class="page-copy">Connect to the ESP32, join WiFi, bind the D12, preview the date label, and test printing from one screen.</p>
+      </header>
+
+      <div class="card-grid">
+        <section class="card">
+          <div class="card-header">
+            <h2>Device</h2>
+            <p class="section-copy">Start by connecting to the ESP32 config service over Web Bluetooth.</p>
+          </div>
         <div class="button-row">
-          <button id="connect-btn" class="primary" type="button">Connect</button>
+          <button id="connect-btn" class="primary" type="button">Connect Device</button>
         </div>
         <p id="ble-status" class="status">Not connected.</p>
-      </section>
+        </section>
 
-      <section class="card">
-        <h2>WiFi</h2>
+        <section class="card">
+          <div class="card-header">
+            <h2>WiFi</h2>
+            <p class="section-copy">Scan for nearby networks, then save credentials so the device can sync the current date.</p>
+          </div>
         <div class="button-row">
           <button id="scan-btn" type="button" disabled>Scan Networks</button>
         </div>
@@ -652,25 +897,46 @@ function renderApp(root) {
         <div class="wifi-form">
           <input id="ssid-input" type="text" placeholder="SSID" />
           <input id="pass-input" type="password" placeholder="Password" />
-          <button id="wifi-connect-btn" type="button" disabled>Connect WiFi</button>
+          <button id="wifi-connect-btn" type="button" disabled>Save WiFi</button>
         </div>
         <p id="wifi-status-text" class="status">Idle</p>
-      </section>
+        </section>
+
+        <section class="card">
+          <div class="card-header">
+            <h2>Printer</h2>
+            <p class="section-copy">Find the D12 over BLE, then store its address so the ESP32 can reconnect for each print job.</p>
+          </div>
+        <div class="button-row">
+          <button id="printer-scan-btn" type="button" disabled>Scan Printers</button>
+          <button id="printer-bind-btn" type="button" disabled>Save Printer</button>
+        </div>
+        <div id="printer-list" class="network-list"></div>
+        <p id="printer-selection" class="meta">Select a printer from the scan results.</p>
+        <p id="printer-status" class="status">No printer bound.</p>
+        </section>
+      </div>
 
       <section class="card">
-        <h2>Label Preview</h2>
-        <p id="time-status" class="status">Not connected.</p>
-        <div style="margin-top: 0.75rem">
-          <canvas id="bitmap-canvas" style="border: 1px solid rgba(255,255,255,0.12); border-radius: 8px; image-rendering: pixelated; width: 100%; max-width: 300px;"></canvas>
+        <div class="card-header">
+          <h2>Label Preview</h2>
+          <p class="section-copy">This preview is shown at the bitmap&apos;s actual size. Printing here uses the same ESP32 path as the eventual hardware button.</p>
         </div>
-        <div class="button-row" style="margin-top: 0.75rem">
-          <button id="reload-bitmap-btn" type="button" disabled>Reload</button>
+        <p id="time-status" class="status">Not connected.</p>
+        <div class="preview-row">
+          <div class="preview-shell">
+            <canvas id="bitmap-canvas" class="preview-canvas"></canvas>
+          </div>
+          <div class="preview-actions">
+            <button id="reload-bitmap-btn" type="button" disabled>Refresh Preview</button>
+            <button id="print-btn" type="button" disabled>Print Label</button>
+          </div>
         </div>
         <p id="bitmap-status" class="status"></p>
       </section>
 
       <details class="card">
-        <summary>Debug</summary>
+        <summary>Advanced</summary>
         <div class="button-row" style="margin-top: 0.75rem">
           <button id="load-saved-btn" type="button" disabled>Load Saved</button>
           <button id="clear-btn" type="button" disabled>Clear Credentials</button>
@@ -688,12 +954,18 @@ function renderApp(root) {
   ui.passInput = root.querySelector("#pass-input");
   ui.wifiConnectBtn = root.querySelector("#wifi-connect-btn");
   ui.wifiStatusText = root.querySelector("#wifi-status-text");
+  ui.printerScanBtn = root.querySelector("#printer-scan-btn");
+  ui.printerBindBtn = root.querySelector("#printer-bind-btn");
+  ui.printerList = root.querySelector("#printer-list");
+  ui.printerSelection = root.querySelector("#printer-selection");
+  ui.printerStatus = root.querySelector("#printer-status");
   ui.loadSavedBtn = root.querySelector("#load-saved-btn");
   ui.clearBtn = root.querySelector("#clear-btn");
   ui.savedCreds = root.querySelector("#saved-creds");
   ui.timeStatus = root.querySelector("#time-status");
   ui.bitmapCanvas = root.querySelector("#bitmap-canvas");
   ui.reloadBitmapBtn = root.querySelector("#reload-bitmap-btn");
+  ui.printBtn = root.querySelector("#print-btn");
   ui.bitmapStatus = root.querySelector("#bitmap-status");
 
   ui.connectBtn.addEventListener("click", async () => {
@@ -738,6 +1010,53 @@ function renderApp(root) {
     }
   });
 
+  ui.printerScanBtn.addEventListener("click", async () => {
+    state.printer.selectedAddress = "";
+    updatePrinterUI();
+    try {
+      const devices = await scanPrinters();
+      state.printer.devices = devices;
+      if (state.printer.boundAddress) {
+        const saved = devices.find((device) => device.address === state.printer.boundAddress);
+        if (saved) {
+          state.printer.selectedAddress = saved.address;
+        }
+      }
+      renderPrinterList(devices);
+      if (ui.printerStatus) {
+        ui.printerStatus.textContent = `Found ${devices.length} printer(s).`;
+      }
+      updateUI();
+    } catch (err) {
+      if (ui.printerStatus) {
+        ui.printerStatus.textContent = `Scan failed: ${err.message}`;
+      }
+    }
+  });
+
+  ui.printerBindBtn.addEventListener("click", async () => {
+    if (!state.printer.selectedAddress) {
+      updatePrinterUI();
+      return;
+    }
+
+    if (ui.printerStatus) {
+      ui.printerStatus.textContent = `Binding ${state.printer.selectedAddress}...`;
+    }
+
+    try {
+      await bindPrinter(state.printer.selectedAddress);
+      await getSavedPrinter();
+      if (ui.printerStatus) {
+        ui.printerStatus.textContent = `Bound printer: ${state.printer.boundAddress}`;
+      }
+    } catch (err) {
+      if (ui.printerStatus) {
+        ui.printerStatus.textContent = `Bind failed: ${err.message}`;
+      }
+    }
+  });
+
   ui.loadSavedBtn.addEventListener("click", async () => {
     try {
       const creds = await getSavedCreds();
@@ -762,6 +1081,28 @@ function renderApp(root) {
   });
 
   ui.reloadBitmapBtn.addEventListener("click", () => loadPreview());
+
+  ui.printBtn.addEventListener("click", async () => {
+    state.preview.printing = true;
+    updateUI();
+    if (ui.bitmapStatus) {
+      ui.bitmapStatus.textContent = "Printing...";
+    }
+
+    try {
+      await printLabel();
+      if (ui.bitmapStatus) {
+        ui.bitmapStatus.textContent = "Print job sent.";
+      }
+    } catch (err) {
+      if (ui.bitmapStatus) {
+        ui.bitmapStatus.textContent = `Print failed: ${err.message}`;
+      }
+    } finally {
+      state.preview.printing = false;
+      updateUI();
+    }
+  });
 
   updateUI();
 }

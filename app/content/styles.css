@@ -39,9 +39,43 @@ code {
 .layout {
   width: min(700px, calc(100% - 2rem));
   margin: 0 auto;
-  padding: 1.5rem 0 4rem;
+  padding: 1.75rem 0 4rem;
   display: flex;
   flex-direction: column;
+  gap: 1.25rem;
+}
+
+.page-header {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.eyebrow {
+  margin: 0;
+  font-size: 0.78rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #90a6ff;
+}
+
+.page-header h1 {
+  margin: 0;
+  font-size: clamp(1.5rem, 4vw, 2rem);
+  line-height: 1.15;
+}
+
+.page-copy {
+  margin: 0;
+  max-width: 60ch;
+  color: #c9d2e3;
+  font-size: 0.95rem;
+}
+
+.card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
   gap: 1rem;
 }
 
@@ -55,13 +89,26 @@ code {
   box-shadow: 0 18px 60px rgba(0, 0, 0, 0.2);
 }
 
+.card-header {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  margin-bottom: 0.9rem;
+}
+
 .card h2 {
-  margin: 0 0 0.85rem;
+  margin: 0;
   font-size: 0.95rem;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.06em;
   color: #90a6ff;
+}
+
+.section-copy {
+  margin: 0;
+  color: #c9d2e3;
+  font-size: 0.87rem;
 }
 
 /* Buttons */
@@ -70,8 +117,10 @@ button {
   padding: 0.6rem 1.1rem;
   border-radius: 10px;
   border: 1px solid rgba(255, 255, 255, 0.18);
+  background: rgba(255, 255, 255, 0.05);
   color: inherit;
   cursor: pointer;
+  transition: background 140ms ease, border-color 140ms ease, transform 140ms ease;
 }
 
 button.primary {
@@ -84,6 +133,7 @@ button.secondary {
 
 button:hover {
   background: rgba(88, 141, 255, 0.28);
+  border-color: rgba(88, 141, 255, 0.35);
 }
 
 button:disabled {
@@ -101,12 +151,19 @@ button:disabled {
   flex: 1 1 180px;
 }
 
+.card .button-row + .network-list,
+.card .button-row + .wifi-form,
+.card .button-row + .preview-row {
+  margin-top: 0.75rem;
+}
+
 /* Status */
 
 .status {
   margin: 0.75rem 0 0;
   font-size: 0.875rem;
   color: #c9d2e3;
+  line-height: 1.45;
 }
 
 /* Settings */
@@ -202,6 +259,40 @@ button:disabled {
   font-size: 0.8rem;
 }
 
+.preview-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 1rem;
+}
+
+.preview-shell {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.75rem;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.preview-canvas {
+  display: block;
+  background: white;
+  image-rendering: pixelated;
+}
+
+.preview-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  min-width: 160px;
+}
+
+.preview-actions button {
+  width: 100%;
+}
+
 /* Details */
 
 details.card > summary {
@@ -240,5 +331,13 @@ details[open].card > summary::before {
   .layout {
     width: calc(100% - 1.5rem);
     padding-top: 1rem;
+  }
+
+  .card {
+    padding: 1rem;
+  }
+
+  .preview-actions {
+    width: 100%;
   }
 }
