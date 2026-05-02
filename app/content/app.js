@@ -45,6 +45,7 @@ const ERROR_NAME = {
 };
 
 const SCAN_TIMEOUT_MS = 15000;
+const BLE_DEBUG = true;
 
 const state = {
   ble: {
@@ -54,6 +55,7 @@ const state = {
     notifyChar: null,
     connected: false,
     handler: null,
+    commandChain: Promise.resolve(),
   },
   wifi: {
     status: 0x00,
@@ -67,6 +69,12 @@ const state = {
 };
 
 const ui = {};
+
+function debugLog(...args) {
+  if (BLE_DEBUG) {
+    console.debug("[ble]", ...args);
+  }
+}
 
 // ── Protocol helpers ────────────────────────────────────────────────────
 
@@ -83,7 +91,17 @@ function parseMsg(dataView) {
     dataView.buffer, dataView.byteOffset, dataView.byteLength
   );
   if (bytes.length < 2) return null;
-  return { type: bytes[0], payload: bytes.slice(2, 2 + bytes[1]) };
+  const payloadLength = bytes[1];
+  const payload = bytes.slice(2, 2 + payloadLength);
+  if (payload.length !== payloadLength) {
+    debugLog("truncated message", {
+      type: bytes[0],
+      expectedPayloadLength: payloadLength,
+      actualPayloadLength: payload.length,
+      rawLength: bytes.length,
+    });
+  }
+  return { type: bytes[0], payload };
 }
 
 function encodeWifiConnect(ssid, password) {
@@ -112,6 +130,11 @@ function handleNotification(event) {
   if (!dataView) return;
   const msg = parseMsg(dataView);
   if (!msg) return;
+  debugLog("notify", {
+    type: `0x${msg.type.toString(16)}`,
+    rawLength: dataView.byteLength,
+    payloadLength: msg.payload.length,
+  });
 
   if (state.ble.handler) {
     state.ble.handler(msg);
@@ -138,6 +161,7 @@ function handleGattDisconnected() {
   state.ble.notifyChar = null;
   state.ble.connected = false;
   state.ble.handler = null;
+  state.ble.commandChain = Promise.resolve();
   setBleStatus("Disconnected.");
   updateUI();
 }
@@ -181,8 +205,21 @@ async function disconnectBle() {
 }
 
 async function writeCmd(type, payload = new Uint8Array()) {
-  if (!state.ble.writeChar) throw new Error("Not connected.");
-  await state.ble.writeChar.writeValue(encodeMsg(type, payload));
+  const command = async () => {
+    if (!state.ble.writeChar) throw new Error("Not connected.");
+    debugLog("write", {
+      type: `0x${type.toString(16)}`,
+      payloadLength: payload.length,
+    });
+    await state.ble.writeChar.writeValue(encodeMsg(type, payload));
+  };
+
+  const queued = state.ble.commandChain
+    .catch(() => {})
+    .then(command);
+
+  state.ble.commandChain = queued;
+  return queued;
 }
 
 function getWifiStatus() {
@@ -351,6 +388,7 @@ function getTimeStatus() {
         const dateStr = msg.payload.length > 1
           ? new TextDecoder().decode(msg.payload.slice(1))
           : "";
+        debugLog("time status", { synced, dateStr });
         resolve({ synced, date: dateStr });
       } else if (msg.type === RSP.ERROR) {
         clearTimeout(timeout);
@@ -380,6 +418,15 @@ function getDateBitmap() {
     const pendingChunks = [];
 
     function fail(message) {
+      debugLog("bitmap fail", {
+        message,
+        width,
+        height,
+        totalExpected,
+        totalReceived,
+        pendingChunks: pendingChunks.length,
+        chunks: chunks.length,
+      });
       clearTimeout(timeout);
       state.ble.handler = null;
       reject(new Error(message));
@@ -388,6 +435,11 @@ function getDateBitmap() {
     function processChunk(chunk) {
       chunks.push(chunk);
       totalReceived += chunk.length;
+      debugLog("bitmap chunk", {
+        chunkLength: chunk.length,
+        totalReceived,
+        totalExpected,
+      });
 
       if (totalExpected !== null && totalReceived >= totalExpected) {
         clearTimeout(timeout);
@@ -400,11 +452,20 @@ function getDateBitmap() {
           bitmap.set(dataChunk.slice(0, copyLen), offset);
           offset += copyLen;
         }
+        debugLog("bitmap complete", { width, height, totalExpected, totalReceived });
         resolve({ width, height, data: bitmap });
       }
     }
 
     const timeout = setTimeout(() => {
+      debugLog("bitmap timeout", {
+        width,
+        height,
+        totalExpected,
+        totalReceived,
+        pendingChunks: pendingChunks.length,
+        chunks: chunks.length,
+      });
       state.ble.handler = null;
       reject(new Error("Bitmap transfer timed out."));
     }, 15000);
@@ -421,6 +482,7 @@ function getDateBitmap() {
         width = msg.payload[0] | (msg.payload[1] << 8);
         height = msg.payload[2] | (msg.payload[3] << 8);
         totalExpected = Math.ceil(width / 8) * height;
+        debugLog("bitmap header", { width, height, totalExpected });
 
         if (!width || !height || !totalExpected) {
           fail("Bitmap header was empty.");
@@ -433,6 +495,7 @@ function getDateBitmap() {
         pendingChunks.length = 0;
       } else if (msg.type === RSP.DATE_BITMAP_DATA) {
         if (totalExpected === null) {
+          debugLog("bitmap chunk before header", { chunkLength: msg.payload.length });
           pendingChunks.push(msg.payload.slice());
         } else {
           processChunk(msg.payload);
@@ -446,6 +509,7 @@ function getDateBitmap() {
     };
 
     writeCmd(CMD.GET_DATE_BITMAP).catch((err) => {
+      debugLog("bitmap request failed", err);
       clearTimeout(timeout);
       state.ble.handler = null;
       reject(err);
@@ -508,6 +572,7 @@ async function loadPreview() {
       ui.bitmapStatus.textContent = `${bitmap.width}x${bitmap.height} (${bitmap.data.length} bytes)`;
     }
   } catch (err) {
+    debugLog("preview load error", err);
     if (ui.bitmapStatus) ui.bitmapStatus.textContent = `Error: ${err.message}`;
   } finally {
     state.preview.loading = false;

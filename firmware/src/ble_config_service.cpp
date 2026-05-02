@@ -9,6 +9,10 @@
 namespace date_label {
 
 BleConfigService* BleConfigService::instance_ = nullptr;
+constexpr size_t kBitmapChunkSafetyLimit = 200;
+constexpr unsigned long kBitmapChunkDelayMs = 30;
+constexpr unsigned long kNotifyRetryDelayMs = 75;
+constexpr unsigned long kIndicationAckTimeoutMs = 1500;
 
 // ── NimBLE callbacks ─────────────────────────────────────────────────────
 
@@ -16,8 +20,8 @@ class ConfigServerCallbacks : public NimBLEServerCallbacks {
  public:
   explicit ConfigServerCallbacks(BleConfigService& svc) : svc_(svc) {}
 
-  void onConnect(NimBLEServer*, NimBLEConnInfo&) override {
-    svc_.HandleConnect();
+  void onConnect(NimBLEServer*, NimBLEConnInfo& connInfo) override {
+    svc_.HandleConnect(connInfo);
   }
 
   void onDisconnect(NimBLEServer*, NimBLEConnInfo&, int) override {
@@ -36,6 +40,18 @@ class ConfigWriteCallbacks : public NimBLECharacteristicCallbacks {
     const std::string value = chr->getValue();
     svc_.HandleWrite(
         reinterpret_cast<const uint8_t*>(value.data()), value.size());
+  }
+
+ private:
+  BleConfigService& svc_;
+};
+
+class ConfigNotifyCallbacks : public NimBLECharacteristicCallbacks {
+ public:
+  explicit ConfigNotifyCallbacks(BleConfigService& svc) : svc_(svc) {}
+
+  void onStatus(NimBLECharacteristic*, NimBLEConnInfo&, int code) override {
+    svc_.HandleNotifyStatus(code);
   }
 
  private:
@@ -63,7 +79,8 @@ void BleConfigService::Begin(WifiManager& wifi) {
 
   notifyChar_ = service->createCharacteristic(
       config::kConfigNotifyUuid,
-      NIMBLE_PROPERTY::NOTIFY);
+      NIMBLE_PROPERTY::NOTIFY | NIMBLE_PROPERTY::INDICATE);
+  notifyChar_->setCallbacks(new ConfigNotifyCallbacks(*this));
 
   server_->start();
 
@@ -80,17 +97,23 @@ void BleConfigService::Poll() {
   if (wifi_ != nullptr) {
     wifi_->Poll(StaticNotify);
   }
+  ContinueBitmapTransfer();
 }
 
 // ── Private ──────────────────────────────────────────────────────────────
 
-void BleConfigService::HandleConnect() {
+void BleConfigService::HandleConnect(const NimBLEConnInfo& connInfo) {
   connected_ = true;
-  Serial.println("BLE: client connected");
+  connHandle_ = connInfo.getConnHandle();
+  peerMtu_ = connInfo.getMTU();
+  Serial.printf("BLE: client connected (handle=%u mtu=%u)\n", connHandle_, peerMtu_);
 }
 
 void BleConfigService::HandleDisconnect() {
   connected_ = false;
+  connHandle_ = BLE_HS_CONN_HANDLE_NONE;
+  peerMtu_ = 23;
+  ResetBitmapTransfer();
   Serial.println("BLE: client disconnected");
   NimBLEDevice::getAdvertising()->start();
 }
@@ -162,6 +185,7 @@ void BleConfigService::HandleWrite(const uint8_t* data, size_t length) {
     }
 
     case CmdType::kGetDateBitmap: {
+      ResetBitmapTransfer();
       char dateBuf[11] = {};
       if (!wifi_->GetDateString(dateBuf, sizeof(dateBuf))) {
         size_t len = EncodeError(header.type, ErrorCode::kTimeNotSynced,
@@ -171,33 +195,42 @@ void BleConfigService::HandleWrite(const uint8_t* data, size_t length) {
       }
 
       uint16_t bmpW, bmpH;
-      uint8_t* bmpData = RenderDateBitmap(dateBuf, bmpW, bmpH);
-      if (bmpData == nullptr) {
+      bitmapData_ = RenderDateBitmap(dateBuf, bmpW, bmpH);
+      if (bitmapData_ == nullptr) {
         size_t len = EncodeError(header.type, ErrorCode::kRenderFailed,
-                                 buf, sizeof(buf));
+                                  buf, sizeof(buf));
         if (len > 0) Notify(buf, len);
         break;
       }
 
-      // Send header.
-      size_t len = EncodeBitmapHeader(bmpW, bmpH, buf, sizeof(buf));
-      if (len > 0) Notify(buf, len);
-      delay(20);
-
-      // Send data in chunks.
-      size_t totalBytes = (bmpW / 8) * bmpH;
-      size_t offset = 0;
-      while (offset < totalBytes) {
-        size_t chunk = totalBytes - offset;
-        if (chunk > kMaxPayload) chunk = kMaxPayload;
-        len = EncodeBitmapData(bmpData + offset, chunk, buf, sizeof(buf));
-        if (len > 0) Notify(buf, len);
-        offset += chunk;
-        delay(20);
+      bitmapWidth_ = bmpW;
+      bitmapHeight_ = bmpH;
+      bitmapTotalBytes_ = (bmpW / 8) * bmpH;
+      if (server_ != nullptr && connHandle_ != BLE_HS_CONN_HANDLE_NONE) {
+        uint16_t currentPeerMtu = server_->getPeerMTU(connHandle_);
+        if (currentPeerMtu > 0) {
+          peerMtu_ = currentPeerMtu;
+        }
       }
-
-      delete[] bmpData;
-      Serial.printf("BLE: sent bitmap %ux%u (%u bytes)\n", bmpW, bmpH, totalBytes);
+      size_t maxChunkPayload = kMaxPayload;
+      if (peerMtu_ > 5) {
+        size_t peerPayload = peerMtu_ - 5;  // ATT MTU minus ATT(3) and protocol(2) headers.
+        if (peerPayload < maxChunkPayload) {
+          maxChunkPayload = peerPayload;
+        }
+      }
+      if (maxChunkPayload > kBitmapChunkSafetyLimit) {
+        maxChunkPayload = kBitmapChunkSafetyLimit;
+      }
+      bitmapChunkPayload_ = maxChunkPayload;
+      bitmapOffset_ = 0;
+      bitmapTransferActive_ = true;
+      bitmapHeaderPending_ = true;
+      bitmapAwaitingAck_ = false;
+      bitmapAckDeadlineMs_ = 0;
+      bitmapNextSendMs_ = 0;
+      Serial.printf("BLE: bitmap transfer queued mtu=%u chunk=%u total=%u\n",
+                    peerMtu_, bitmapChunkPayload_, bitmapTotalBytes_);
       break;
     }
 
@@ -210,10 +243,109 @@ void BleConfigService::HandleWrite(const uint8_t* data, size_t length) {
   }
 }
 
-void BleConfigService::Notify(const uint8_t* data, size_t length) {
-  if (notifyChar_ == nullptr || !connected_) return;
-  notifyChar_->setValue(data, length);
-  notifyChar_->notify();
+void BleConfigService::HandleNotifyStatus(int code) {
+  if (!bitmapTransferActive_ || !bitmapAwaitingAck_) return;
+
+  if (code == BLE_HS_EDONE) {
+    bitmapAwaitingAck_ = false;
+    bitmapAckDeadlineMs_ = 0;
+    bitmapNextSendMs_ = millis() + kBitmapChunkDelayMs;
+    return;
+  }
+
+  Serial.printf("BLE: indicate status error=%d at offset=%u\n", code, bitmapOffset_);
+  ResetBitmapTransfer();
+}
+
+void BleConfigService::ContinueBitmapTransfer() {
+  if (!bitmapTransferActive_ || !connected_) return;
+  if (bitmapAwaitingAck_) {
+    if (bitmapAckDeadlineMs_ != 0 && millis() >= bitmapAckDeadlineMs_) {
+      Serial.printf("BLE: indication wait timed out at offset=%u\n", bitmapOffset_);
+      ResetBitmapTransfer();
+    }
+    return;
+  }
+  if (bitmapNextSendMs_ != 0 && millis() < bitmapNextSendMs_) return;
+
+  uint8_t buf[kMaxMsgSize];
+  size_t len = 0;
+
+  if (bitmapHeaderPending_) {
+    len = EncodeBitmapHeader(bitmapWidth_, bitmapHeight_, buf, sizeof(buf));
+    if (len == 0) {
+      Serial.println("BLE: failed to encode bitmap header");
+      ResetBitmapTransfer();
+      return;
+    }
+    if (!Notify(buf, len, true)) {
+      bitmapNextSendMs_ = millis() + kNotifyRetryDelayMs;
+      return;
+    }
+    bitmapHeaderPending_ = false;
+    bitmapAwaitingAck_ = true;
+    bitmapAckDeadlineMs_ = millis() + kIndicationAckTimeoutMs;
+    return;
+  }
+
+  if (bitmapOffset_ >= bitmapTotalBytes_) {
+    Serial.printf("BLE: sent bitmap %ux%u (%u bytes)\n",
+                  bitmapWidth_, bitmapHeight_, bitmapTotalBytes_);
+    ResetBitmapTransfer();
+    return;
+  }
+
+  size_t chunk = bitmapTotalBytes_ - bitmapOffset_;
+  if (chunk > bitmapChunkPayload_) chunk = bitmapChunkPayload_;
+  len = EncodeBitmapData(bitmapData_ + bitmapOffset_, chunk, buf, sizeof(buf));
+  if (len == 0) {
+    Serial.printf("BLE: failed to encode bitmap chunk at offset=%u size=%u\n",
+                  bitmapOffset_, chunk);
+    ResetBitmapTransfer();
+    return;
+  }
+  if (!Notify(buf, len, true)) {
+    bitmapNextSendMs_ = millis() + kNotifyRetryDelayMs;
+    return;
+  }
+  bitmapOffset_ += chunk;
+  bitmapAwaitingAck_ = true;
+  bitmapAckDeadlineMs_ = millis() + kIndicationAckTimeoutMs;
+}
+
+void BleConfigService::ResetBitmapTransfer() {
+  if (bitmapData_ != nullptr) {
+    delete[] bitmapData_;
+    bitmapData_ = nullptr;
+  }
+  bitmapWidth_ = 0;
+  bitmapHeight_ = 0;
+  bitmapTotalBytes_ = 0;
+  bitmapOffset_ = 0;
+  bitmapChunkPayload_ = 0;
+  bitmapTransferActive_ = false;
+  bitmapHeaderPending_ = false;
+  bitmapAwaitingAck_ = false;
+  bitmapAckDeadlineMs_ = 0;
+  bitmapNextSendMs_ = 0;
+}
+
+bool BleConfigService::Notify(const uint8_t* data, size_t length, bool requireAck) {
+  if (notifyChar_ == nullptr || !connected_ || connHandle_ == BLE_HS_CONN_HANDLE_NONE) return false;
+  if (server_ != nullptr) {
+    uint16_t currentPeerMtu = server_->getPeerMTU(connHandle_);
+    if (currentPeerMtu > 0) {
+      peerMtu_ = currentPeerMtu;
+    }
+  }
+  bool ok = requireAck
+    ? notifyChar_->indicate(data, length, connHandle_)
+    : notifyChar_->notify(data, length, connHandle_);
+  if (!ok) {
+    Serial.printf("BLE: %s failed (handle=%u len=%u)\n",
+                  requireAck ? "indicate" : "notify", connHandle_, length);
+  }
+  return ok;
 }
 
 void BleConfigService::StaticNotify(const uint8_t* data, size_t length) {
