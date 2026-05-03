@@ -22,6 +22,9 @@ class BleConfigService {
  public:
   void Begin(WifiManager& wifi);
   void Poll();
+  bool RequestPrint();
+  bool HasSavedPrinter() const;
+  bool IsPrinting() const { return printRequested_ || printInProgress_; }
 
  private:
   friend class ConfigServerCallbacks;
@@ -70,6 +73,7 @@ class BleConfigService {
   std::vector<std::string> printerSeenAddresses_;
   PrinterManager printerManager_;
   bool printRequested_ = false;
+  bool printInProgress_ = false;
 
   static BleConfigService* instance_;
 };

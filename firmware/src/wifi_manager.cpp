@@ -85,8 +85,8 @@ void WifiManager::Begin() {
 
   Preferences prefs;
   prefs.begin(config::kNvsNamespace, false);
-  bool configured = prefs.getUChar(config::kNvsKeyConfigured, 0) != 0;
-  if (configured) {
+  configured_ = prefs.getUChar(config::kNvsKeyConfigured, 0) != 0;
+  if (configured_) {
     String ssid = prefs.getString(config::kNvsKeyWifiSsid, "");
     String pass = prefs.getString(config::kNvsKeyWifiPass, "");
     prefs.end();
@@ -169,6 +169,7 @@ void WifiManager::Poll(NotifyFn notify) {
       prefs.putString(config::kNvsKeyWifiPass, pass_);
       prefs.putUChar(config::kNvsKeyConfigured, 1);
       prefs.end();
+      configured_ = true;
 
       SendStatus(notify);
     } else if (ws == WL_CONNECT_FAILED || ws == WL_NO_SSID_AVAIL) {
@@ -242,6 +243,7 @@ void WifiManager::Clear(NotifyFn notify) {
   pass_[0] = '\0';
   status_ = WifiStatus::kIdle;
   connectPending_ = false;
+  configured_ = false;
   timeSynced_ = false;
   utcOffsetSeconds_ = 0;
   lastTimeSyncMs_ = 0;

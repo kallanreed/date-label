@@ -3,6 +3,7 @@
 
 #include "app_config.h"
 #include "ble_config_service.h"
+#include "device_ui.h"
 #include "wifi_manager.h"
 
 #ifndef PIO_UNIT_TESTING
@@ -11,6 +12,7 @@ namespace {
 
 date_label::WifiManager wifiManager;
 date_label::BleConfigService bleConfig;
+date_label::DeviceUi deviceUi;
 
 }  // namespace
 
@@ -29,9 +31,11 @@ void setup() {
 
   wifiManager.Begin();
   bleConfig.Begin(wifiManager);
+  deviceUi.Begin();
 }
 
 void loop() {
+  deviceUi.Poll(wifiManager, bleConfig);
   bleConfig.Poll();
   delay(10);
 }

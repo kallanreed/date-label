@@ -20,6 +20,7 @@ class WifiManager {
 
   WifiStatus status() const { return status_; }
   const char* ssid() const { return ssid_; }
+  bool configured() const { return configured_; }
 
   bool LoadSaved(char* ssid, size_t ssidCap, char* pass, size_t passCap);
 
@@ -41,6 +42,7 @@ class WifiManager {
   char pass_[65] = {};
   bool scanning_ = false;
   bool connectPending_ = false;
+  bool configured_ = false;
   bool timeSynced_ = false;
   int32_t utcOffsetSeconds_ = 0;
   unsigned long lastTimeSyncMs_ = 0;

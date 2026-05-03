@@ -5,8 +5,12 @@
 namespace date_label::config {
 
 // ── Hardware ─────────────────────────────────────────────────────────────
-constexpr int8_t kButtonPin = 9;  // GPIO9 (boot button on most C3 boards)
-constexpr int8_t kLedPin = -1;    // -1 = no LED
+constexpr int8_t kButtonPin = 6;  // D4 on XIAO ESP32C3
+constexpr int8_t kStatusLedRedPin = 3;    // D1
+constexpr int8_t kStatusLedGreenPin = 4;  // D2
+constexpr int8_t kStatusLedBluePin = 5;   // D3
+constexpr bool kStatusLedActiveLow = false;  // Common-cathode RGB LED tied to GND.
+constexpr uint8_t kStatusLedMaxBrightness = 96;
 
 // ── D12 Printer BLE ──────────────────────────────────────────────────────
 constexpr char kPrinterServiceUuid[] = "0000ff00-0000-1000-8000-00805f9b34fb";

@@ -149,6 +149,19 @@ void BleConfigService::Poll() {
   ContinueBitmapTransfer();
 }
 
+bool BleConfigService::RequestPrint() {
+  if (printRequested_ || printInProgress_) {
+    return false;
+  }
+  printRequested_ = true;
+  return true;
+}
+
+bool BleConfigService::HasSavedPrinter() const {
+  char address[kPrinterAddressCap] = {};
+  return LoadPrinterAddress(address, sizeof(address));
+}
+
 // ── Private ──────────────────────────────────────────────────────────────
 
 void BleConfigService::HandleConnect(const NimBLEConnInfo& connInfo) {
@@ -323,12 +336,10 @@ void BleConfigService::HandleWrite(const uint8_t* data, size_t length) {
     }
 
     case CmdType::kPrintLabel:
-      if (printRequested_) {
+      if (!RequestPrint()) {
         size_t len = EncodeError(header.type, ErrorCode::kOperationFailed,
                                  buf, sizeof(buf));
         if (len > 0) Notify(buf, len);
-      } else {
-        printRequested_ = true;
       }
       break;
 
@@ -415,7 +426,9 @@ void BleConfigService::ContinuePrintJob() {
   if (!printRequested_ || wifi_ == nullptr) return;
 
   printRequested_ = false;
+  printInProgress_ = true;
   const PrinterManager::PrintResult result = printerManager_.PrintCurrentDate(*wifi_);
+  printInProgress_ = false;
 
   uint8_t buf[kMaxMsgSize];
   size_t len = 0;
