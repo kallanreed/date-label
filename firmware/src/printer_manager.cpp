@@ -161,6 +161,10 @@ bool PrinterManager::WritePayload(::NimBLERemoteCharacteristic* writeChar,
   }
   if (chunkSize == 0) chunkSize = 20;
 
+  const uint16_t chunkDelayMs = chunkSize <= 64
+      ? config::kPrinterChunkDelaySlowMs
+      : config::kPrinterChunkDelayMs;
+
   for (size_t offset = 0; offset < payloadLen; offset += chunkSize) {
     size_t chunkLen = payloadLen - offset;
     if (chunkLen > chunkSize) chunkLen = chunkSize;
@@ -170,11 +174,11 @@ bool PrinterManager::WritePayload(::NimBLERemoteCharacteristic* writeChar,
     }
 
     if (offset + chunkLen < payloadLen) {
-      delay(config::kPrinterChunkDelayMs);
+      delay(chunkDelayMs);
     }
   }
 
-  delay(50);
+  delay(config::kPrinterFinalDelayMs);
   return true;
 }
 

@@ -12,8 +12,10 @@ constexpr int8_t kLedPin = -1;    // -1 = no LED
 constexpr char kPrinterServiceUuid[] = "0000ff00-0000-1000-8000-00805f9b34fb";
 constexpr char kPrinterWriteUuid[]   = "0000ff02-0000-1000-8000-00805f9b34fb";
 constexpr char kPrinterNotifyUuid[]  = "0000ff03-0000-1000-8000-00805f9b34fb";
-constexpr uint16_t kPrinterChunkSize = 1024;
-constexpr uint16_t kPrinterChunkDelayMs = 5;
+constexpr uint16_t kPrinterChunkSize = 64;
+constexpr uint16_t kPrinterChunkDelayMs = 12;
+constexpr uint16_t kPrinterChunkDelaySlowMs = 20;
+constexpr uint16_t kPrinterFinalDelayMs = 750;
 constexpr uint8_t kPrinterDensity = 3;
 constexpr uint8_t kPrinterPaperTypeGap = 0;
 
