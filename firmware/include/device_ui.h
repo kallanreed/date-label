@@ -38,8 +38,6 @@ class DeviceUi {
   bool buttonStablePressed_ = false;
   bool buttonLastReadingPressed_ = false;
   unsigned long buttonLastChangeMs_ = 0;
-  bool printerConfigured_ = false;
-  unsigned long lastPrinterRefreshMs_ = 0;
 };
 
 }  // namespace date_label

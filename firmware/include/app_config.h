@@ -10,7 +10,7 @@ constexpr int8_t kStatusLedRedPin = 3;    // D1
 constexpr int8_t kStatusLedGreenPin = 4;  // D2
 constexpr int8_t kStatusLedBluePin = 5;   // D3
 constexpr bool kStatusLedActiveLow = false;  // Common-cathode RGB LED tied to GND.
-constexpr uint8_t kStatusLedMaxBrightness = 96;
+constexpr uint8_t kStatusLedMaxBrightness = 48;
 
 // ── D12 Printer BLE ──────────────────────────────────────────────────────
 constexpr char kPrinterServiceUuid[] = "0000ff00-0000-1000-8000-00805f9b34fb";
@@ -42,7 +42,8 @@ constexpr uint8_t kFontCharGap = 1;
 constexpr uint8_t kDateStringLength = 10;
 
 // ── Time Sync ────────────────────────────────────────────────────────────
-constexpr char kTimeSyncUrl[] = "https://date-label.pages.dev/local-date";
+constexpr char kTimeSyncHost[] = "time.nist.gov";
+constexpr uint16_t kTimeSyncPort = 13;
 
 // ── NVS Keys ─────────────────────────────────────────────────────────────
 constexpr char kNvsNamespace[] = "datelabel";
@@ -50,5 +51,8 @@ constexpr char kNvsKeyWifiSsid[] = "wifi_ssid";
 constexpr char kNvsKeyWifiPass[] = "wifi_pass";
 constexpr char kNvsKeyPrinterAddr[] = "printer_addr";
 constexpr char kNvsKeyConfigured[] = "configured";
+constexpr char kNvsKeyTimeZoneOffset[] = "tz_offset";
+constexpr char kNvsKeyTimeZoneDst[] = "tz_dst";
+constexpr char kNvsKeyTimeZoneSet[] = "tz_set";
 
 }  // namespace date_label::config

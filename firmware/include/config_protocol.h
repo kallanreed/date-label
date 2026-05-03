@@ -18,6 +18,8 @@ enum class CmdType : uint8_t {
   kPrinterBind = 0x09,
   kPrinterGetSaved = 0x0A,
   kPrintLabel = 0x0B,
+  kTimeZoneSet = 0x0C,
+  kTimeZoneGetSaved = 0x0D,
 };
 
 // ── Response types (ESP32 → SPA, 0x80-0xFF) ──────────────────────────────
@@ -34,6 +36,7 @@ enum class RspType : uint8_t {
   kPrinterScanResult = 0x8A,
   kPrinterScanDone = 0x8B,
   kPrinterSaved = 0x8C,
+  kTimeZoneSaved = 0x8D,
 };
 
 enum class WifiStatus : uint8_t {
@@ -75,6 +78,9 @@ bool ParseWifiConnect(const uint8_t* payload, size_t len,
 bool ParsePrinterBind(const uint8_t* payload, size_t len,
                       char* address, size_t addressCap);
 
+bool ParseTimeZoneConfig(const uint8_t* payload, size_t len,
+                         int16_t& offsetMinutes, bool& useDst);
+
 size_t EncodeScanResult(int8_t rssi, const char* ssid,
                         uint8_t* out, size_t cap);
 
@@ -106,5 +112,8 @@ size_t EncodePrinterScanResult(const char* name, const char* address,
 size_t EncodePrinterScanDone(uint8_t count, uint8_t* out, size_t cap);
 
 size_t EncodePrinterSaved(const char* address, uint8_t* out, size_t cap);
+
+size_t EncodeTimeZoneSaved(bool configured, int16_t offsetMinutes, bool useDst,
+                           uint8_t* out, size_t cap);
 
 }  // namespace date_label

@@ -72,6 +72,7 @@ class BleConfigService {
   uint8_t printerScanCount_ = 0;
   std::vector<std::string> printerSeenAddresses_;
   PrinterManager printerManager_;
+  bool printerConfigured_ = false;
   bool printRequested_ = false;
   bool printInProgress_ = false;
 

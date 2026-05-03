@@ -164,6 +164,17 @@ button:disabled {
   min-width: 0;
 }
 
+.checkbox-row {
+  margin-top: 0.75rem;
+}
+
+.checkbox-row input[type="checkbox"] {
+  flex: 0 0 auto;
+  width: auto;
+  height: auto;
+  padding: 0;
+}
+
 /* WiFi form */
 
 .wifi-form {

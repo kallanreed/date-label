@@ -16,6 +16,8 @@ const CMD = {
   PRINTER_BIND: 0x09,
   PRINTER_GET_SAVED: 0x0A,
   PRINT_LABEL: 0x0B,
+  TIMEZONE_SET: 0x0C,
+  TIMEZONE_GET_SAVED: 0x0D,
 };
 
 const RSP = {
@@ -31,6 +33,7 @@ const RSP = {
   PRINTER_SCAN_RESULT: 0x8A,
   PRINTER_SCAN_DONE: 0x8B,
   PRINTER_SAVED: 0x8C,
+  TIMEZONE_SAVED: 0x8D,
 };
 
 const WIFI_STATUS_NAME = {
@@ -83,6 +86,11 @@ const state = {
   device: {
     timeSynced: false,
     time: "",
+  },
+  timeZone: {
+    configured: false,
+    offsetMinutes: 0,
+    useDst: false,
   },
   config: {
     editing: null,
@@ -144,6 +152,38 @@ function encodeText(value) {
   return new TextEncoder().encode(value);
 }
 
+function encodeTimeZoneConfig(offsetMinutes, useDst) {
+  const payload = new Uint8Array(3);
+  const view = new DataView(payload.buffer);
+  view.setInt16(0, offsetMinutes, true);
+  payload[2] = useDst ? 1 : 0;
+  return payload;
+}
+
+function formatUtcOffset(offsetMinutes, useDst = false) {
+  const sign = offsetMinutes < 0 ? "-" : "+";
+  const totalMinutes = Math.abs(offsetMinutes);
+  const hours = String(Math.floor(totalMinutes / 60)).padStart(2, "0");
+  const minutes = String(totalMinutes % 60).padStart(2, "0");
+  return `UTC${sign}${hours}:${minutes}${useDst ? " + DST" : ""}`;
+}
+
+function parseUtcOffset(input) {
+  const normalized = input.trim().toUpperCase().replace(/^UTC/, "");
+  const match = normalized.match(/^([+-])(\d{1,2})(?::?(\d{2}))?$/);
+  if (!match) return null;
+
+  const hours = Number(match[2]);
+  const minutes = match[3] ? Number(match[3]) : 0;
+  if (Number.isNaN(hours) || Number.isNaN(minutes) || minutes >= 60) {
+    return null;
+  }
+
+  const total = hours * 60 + minutes;
+  if (total > 14 * 60) return null;
+  return match[1] === "-" ? -total : total;
+}
+
 // ── BLE connection ──────────────────────────────────────────────────────
 
 function setBleStatus(message) {
@@ -200,6 +240,9 @@ function handleGattDisconnected() {
   state.printer.boundAddress = "";
   state.device.timeSynced = false;
   state.device.time = "";
+  state.timeZone.configured = false;
+  state.timeZone.offsetMinutes = 0;
+  state.timeZone.useDst = false;
   state.config.editing = null;
   setBleStatus("Disconnected.");
   updateUI();
@@ -235,6 +278,7 @@ async function connectBle() {
   await getWifiStatus();
   await loadSavedWifi();
   await getSavedPrinter();
+  await getSavedTimeZone();
   await loadPreview();
 }
 
@@ -322,6 +366,51 @@ function getSavedPrinter() {
     };
 
     writeCmd(CMD.PRINTER_GET_SAVED).catch((err) => {
+      clearTimeout(timeout);
+      state.ble.handler = null;
+      reject(err);
+    });
+  });
+}
+
+function getSavedTimeZone() {
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      state.ble.handler = null;
+      reject(new Error("Timed out."));
+    }, 5000);
+
+    state.ble.handler = (msg) => {
+      if (msg.type === RSP.TIMEZONE_SAVED) {
+        clearTimeout(timeout);
+        state.ble.handler = null;
+        if (msg.payload.length === 3) {
+          const view = new DataView(
+            msg.payload.buffer,
+            msg.payload.byteOffset,
+            msg.payload.byteLength
+          );
+          state.timeZone.configured = true;
+          state.timeZone.offsetMinutes = view.getInt16(0, true);
+          state.timeZone.useDst = msg.payload[2] === 1;
+        } else {
+          state.timeZone.configured = false;
+          state.timeZone.offsetMinutes = 0;
+          state.timeZone.useDst = false;
+        }
+        updateConfigUI();
+        resolve({ ...state.timeZone });
+      } else if (msg.type === RSP.ERROR) {
+        clearTimeout(timeout);
+        state.ble.handler = null;
+        const code = msg.payload.length > 1 ? msg.payload[1] : 0;
+        reject(new Error(ERROR_NAME[code] || `Error 0x${code.toString(16)}`));
+      } else if (msg.type === RSP.WIFI_STATUS) {
+        handleWifiStatusMsg(msg.payload);
+      }
+    };
+
+    writeCmd(CMD.TIMEZONE_GET_SAVED).catch((err) => {
       clearTimeout(timeout);
       state.ble.handler = null;
       reject(err);
@@ -493,12 +582,53 @@ function printLabel() {
   });
 }
 
+function saveTimeZone(offsetMinutes, useDst) {
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      state.ble.handler = null;
+      reject(new Error("Save timed out."));
+    }, 5000);
+
+    state.ble.handler = (msg) => {
+      if (msg.type === RSP.ACK && msg.payload[0] === CMD.TIMEZONE_SET) {
+        clearTimeout(timeout);
+        state.ble.handler = null;
+        resolve();
+      } else if (msg.type === RSP.ERROR) {
+        clearTimeout(timeout);
+        state.ble.handler = null;
+        const code = msg.payload.length > 1 ? msg.payload[1] : 0;
+        reject(new Error(ERROR_NAME[code] || `Error 0x${code.toString(16)}`));
+      } else if (msg.type === RSP.WIFI_STATUS) {
+        handleWifiStatusMsg(msg.payload);
+      }
+    };
+
+    writeCmd(CMD.TIMEZONE_SET, encodeTimeZoneConfig(offsetMinutes, useDst)).catch((err) => {
+      clearTimeout(timeout);
+      state.ble.handler = null;
+      reject(err);
+    });
+  });
+}
+
 function toggleConfigEditor(section) {
   state.config.editing = state.config.editing === section ? null : section;
 
   if (state.config.editing === "wifi" && ui.ssidInput) {
     ui.ssidInput.value = state.wifi.savedSsid || state.wifi.ssid || "";
     if (ui.passInput) ui.passInput.value = "";
+  }
+
+  if (state.config.editing === "timezone") {
+    if (ui.timeZoneInput) {
+      ui.timeZoneInput.value = state.timeZone.configured
+        ? formatUtcOffset(state.timeZone.offsetMinutes).replace("UTC", "")
+        : "";
+    }
+    if (ui.timeZoneDstInput) {
+      ui.timeZoneDstInput.checked = state.timeZone.useDst;
+    }
   }
 
   updateUI();
@@ -806,9 +936,13 @@ function updateStatusUI() {
   }
 
   if (ui.statusTimeValue) {
-    ui.statusTimeValue.textContent = state.device.timeSynced && state.device.time
-      ? state.device.time
-      : "Waiting for sync";
+    if (!state.timeZone.configured) {
+      ui.statusTimeValue.textContent = "Timezone not configured";
+    } else {
+      ui.statusTimeValue.textContent = state.device.timeSynced && state.device.time
+        ? state.device.time
+        : "Waiting for sync";
+    }
   }
 }
 
@@ -839,6 +973,12 @@ function updateConfigUI() {
     ui.configPrinterValue.textContent = state.printer.boundAddress || "Not configured";
   }
 
+  if (ui.configTimeZoneValue) {
+    ui.configTimeZoneValue.textContent = state.timeZone.configured
+      ? formatUtcOffset(state.timeZone.offsetMinutes, state.timeZone.useDst)
+      : "Not configured";
+  }
+
   if (ui.editWifiBtn) {
     ui.editWifiBtn.textContent = state.config.editing === "wifi" ? "Done" : "Edit";
     ui.editWifiBtn.disabled = !state.ble.connected;
@@ -849,12 +989,27 @@ function updateConfigUI() {
     ui.editPrinterBtn.disabled = !state.ble.connected;
   }
 
+  if (ui.editTimeZoneBtn) {
+    ui.editTimeZoneBtn.textContent = state.config.editing === "timezone" ? "Done" : "Edit";
+    ui.editTimeZoneBtn.disabled = !state.ble.connected;
+  }
+
   if (ui.wifiEditor) {
     ui.wifiEditor.hidden = state.config.editing !== "wifi";
   }
 
   if (ui.printerEditor) {
     ui.printerEditor.hidden = state.config.editing !== "printer";
+  }
+
+  if (ui.timeZoneEditor) {
+    ui.timeZoneEditor.hidden = state.config.editing !== "timezone";
+  }
+
+  if (ui.timeZoneStatus) {
+    ui.timeZoneStatus.textContent = state.timeZone.configured
+      ? `Saved: ${formatUtcOffset(state.timeZone.offsetMinutes, state.timeZone.useDst)}`
+      : "Timezone not configured.";
   }
 }
 
@@ -873,6 +1028,7 @@ function updateUI() {
     ui.printerBindBtn.disabled =
       !connected || state.printer.scanning || !state.printer.selectedAddress;
   }
+  if (ui.timeZoneSaveBtn) ui.timeZoneSaveBtn.disabled = !connected;
   if (ui.clearConfigBtn) ui.clearConfigBtn.disabled = !connected;
   if (ui.reloadBitmapBtn) ui.reloadBitmapBtn.disabled = !connected;
   if (ui.printBtn) {
@@ -993,6 +1149,13 @@ function renderApp(root) {
                 <button id="edit-printer-btn" class="secondary" type="button" disabled>Edit</button>
               </td>
             </tr>
+            <tr>
+              <th scope="row">Time Zone</th>
+              <td id="config-timezone-value">Not configured</td>
+              <td class="table-action">
+                <button id="edit-timezone-btn" class="secondary" type="button" disabled>Edit</button>
+              </td>
+            </tr>
           </tbody>
         </table>
 
@@ -1017,6 +1180,18 @@ function renderApp(root) {
           <div id="printer-list" class="network-list"></div>
           <p id="printer-selection" class="meta">Select a printer from the scan results.</p>
           <p id="printer-status" class="status">No printer bound.</p>
+        </div>
+
+        <div id="timezone-editor" class="config-editor" hidden>
+          <div class="wifi-form">
+            <input id="timezone-input" type="text" placeholder="-07:00" />
+            <button id="timezone-save-btn" type="button" disabled>Save Time Zone</button>
+          </div>
+          <label class="settings-row checkbox-row">
+            <input id="timezone-dst-input" type="checkbox" />
+            <span>Use NIST DST flag</span>
+          </label>
+          <p id="timezone-status" class="status">Timezone not configured.</p>
         </div>
 
         <div class="button-row section-actions">
@@ -1048,8 +1223,10 @@ function renderApp(root) {
   ui.statusTimeValue = root.querySelector("#status-time-value");
   ui.configWifiValue = root.querySelector("#config-wifi-value");
   ui.configPrinterValue = root.querySelector("#config-printer-value");
+  ui.configTimeZoneValue = root.querySelector("#config-timezone-value");
   ui.editWifiBtn = root.querySelector("#edit-wifi-btn");
   ui.editPrinterBtn = root.querySelector("#edit-printer-btn");
+  ui.editTimeZoneBtn = root.querySelector("#edit-timezone-btn");
   ui.scanBtn = root.querySelector("#scan-btn");
   ui.networkList = root.querySelector("#network-list");
   ui.ssidInput = root.querySelector("#ssid-input");
@@ -1063,6 +1240,11 @@ function renderApp(root) {
   ui.printerSelection = root.querySelector("#printer-selection");
   ui.printerStatus = root.querySelector("#printer-status");
   ui.printerEditor = root.querySelector("#printer-editor");
+  ui.timeZoneInput = root.querySelector("#timezone-input");
+  ui.timeZoneDstInput = root.querySelector("#timezone-dst-input");
+  ui.timeZoneSaveBtn = root.querySelector("#timezone-save-btn");
+  ui.timeZoneStatus = root.querySelector("#timezone-status");
+  ui.timeZoneEditor = root.querySelector("#timezone-editor");
   ui.clearConfigBtn = root.querySelector("#clear-config-btn");
   ui.bitmapCanvas = root.querySelector("#bitmap-canvas");
   ui.reloadBitmapBtn = root.querySelector("#reload-bitmap-btn");
@@ -1084,6 +1266,7 @@ function renderApp(root) {
 
   ui.editWifiBtn.addEventListener("click", () => toggleConfigEditor("wifi"));
   ui.editPrinterBtn.addEventListener("click", () => toggleConfigEditor("printer"));
+  ui.editTimeZoneBtn.addEventListener("click", () => toggleConfigEditor("timezone"));
 
   ui.scanBtn.addEventListener("click", async () => {
     setWifiStatus("Scanning...");
@@ -1178,11 +1361,15 @@ function renderApp(root) {
       state.printer.devices = [];
       state.device.timeSynced = false;
       state.device.time = "";
+      state.timeZone.configured = false;
+      state.timeZone.offsetMinutes = 0;
+      state.timeZone.useDst = false;
       state.config.editing = null;
       renderNetworkList([]);
       renderPrinterList([]);
       setWifiStatus("Idle");
       if (ui.printerStatus) ui.printerStatus.textContent = "No printer bound.";
+      if (ui.timeZoneStatus) ui.timeZoneStatus.textContent = "Timezone not configured.";
       if (ui.bitmapStatus) ui.bitmapStatus.textContent = "Config cleared.";
       ui.bitmapCanvas.width = 0;
       ui.bitmapCanvas.height = 0;
@@ -1193,6 +1380,33 @@ function renderApp(root) {
   });
 
   ui.reloadBitmapBtn.addEventListener("click", () => loadPreview());
+
+  ui.timeZoneSaveBtn.addEventListener("click", async () => {
+    const offsetMinutes = parseUtcOffset(ui.timeZoneInput.value);
+    const useDst = ui.timeZoneDstInput.checked;
+    if (offsetMinutes === null) {
+      if (ui.timeZoneStatus) ui.timeZoneStatus.textContent = "Enter an offset like -07:00.";
+      return;
+    }
+
+    if (ui.timeZoneStatus) {
+      ui.timeZoneStatus.textContent = `Saving ${formatUtcOffset(offsetMinutes, useDst)}...`;
+    }
+
+    try {
+      await saveTimeZone(offsetMinutes, useDst);
+      state.timeZone.configured = true;
+      state.timeZone.offsetMinutes = offsetMinutes;
+      state.timeZone.useDst = useDst;
+      state.config.editing = null;
+      await loadPreview();
+      updateUI();
+    } catch (err) {
+      if (ui.timeZoneStatus) {
+        ui.timeZoneStatus.textContent = `Save failed: ${err.message}`;
+      }
+    }
+  });
 
   ui.printBtn.addEventListener("click", async () => {
     state.preview.printing = true;

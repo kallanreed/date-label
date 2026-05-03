@@ -41,6 +41,18 @@ bool ParsePrinterBind(const uint8_t* payload, size_t len,
   return true;
 }
 
+bool ParseTimeZoneConfig(const uint8_t* payload, size_t len,
+                         int16_t& offsetMinutes, bool& useDst) {
+  if (payload == nullptr || len != 3) return false;
+
+  offsetMinutes = static_cast<int16_t>(payload[0] | (payload[1] << 8));
+  if (offsetMinutes < -720 || offsetMinutes > 840) return false;
+
+  if (payload[2] > 1) return false;
+  useDst = payload[2] == 1;
+  return true;
+}
+
 // ── Encode helpers ───────────────────────────────────────────────────────
 
 static size_t WriteHeader(uint8_t type, uint8_t payloadLen,
@@ -221,6 +233,25 @@ size_t EncodePrinterSaved(const char* address, uint8_t* out, size_t cap) {
 
   WriteHeader(static_cast<uint8_t>(RspType::kPrinterSaved), payloadLen, out, cap);
   memcpy(out + 2, address, addressLen);
+  return total;
+}
+
+size_t EncodeTimeZoneSaved(bool configured, int16_t offsetMinutes, bool useDst,
+                           uint8_t* out, size_t cap) {
+  if (!configured) {
+    if (cap < kMsgHeaderSize) return 0;
+    WriteHeader(static_cast<uint8_t>(RspType::kTimeZoneSaved), 0, out, cap);
+    return kMsgHeaderSize;
+  }
+
+  constexpr uint8_t payloadLen = 3;
+  constexpr size_t total = kMsgHeaderSize + payloadLen;
+  if (cap < total) return 0;
+
+  WriteHeader(static_cast<uint8_t>(RspType::kTimeZoneSaved), payloadLen, out, cap);
+  out[2] = static_cast<uint8_t>(offsetMinutes & 0xFF);
+  out[3] = static_cast<uint8_t>((offsetMinutes >> 8) & 0xFF);
+  out[4] = useDst ? 1 : 0;
   return total;
 }
 

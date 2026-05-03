@@ -102,6 +102,7 @@ class PrinterScanCallbacks : public ::NimBLEScanCallbacks {
 void BleConfigService::Begin(WifiManager& wifi) {
   wifi_ = &wifi;
   instance_ = this;
+  printerConfigured_ = HasSavedPrinter();
 
   NimBLEDevice::init(config::kBleDeviceName);
   NimBLEDevice::setMTU(247);
@@ -158,8 +159,7 @@ bool BleConfigService::RequestPrint() {
 }
 
 bool BleConfigService::HasSavedPrinter() const {
-  char address[kPrinterAddressCap] = {};
-  return LoadPrinterAddress(address, sizeof(address));
+  return printerConfigured_;
 }
 
 // ── Private ──────────────────────────────────────────────────────────────
@@ -240,14 +240,15 @@ void BleConfigService::HandleWrite(const uint8_t* data, size_t length) {
     }
 
     case CmdType::kWifiClear:
+      printerConfigured_ = false;
       wifi_->Clear(StaticNotify);
       break;
 
     case CmdType::kGetTimeStatus: {
-      char dateBuf[11] = {};
-      bool synced = wifi_->GetDateString(dateBuf, sizeof(dateBuf));
-      size_t len = EncodeTimeStatus(synced, synced ? dateBuf : nullptr,
-                                     buf, sizeof(buf));
+      char timeBuf[17] = {};
+      bool synced = wifi_->GetTimeDisplayString(timeBuf, sizeof(timeBuf));
+      size_t len = EncodeTimeStatus(synced, synced ? timeBuf : nullptr,
+                                      buf, sizeof(buf));
       if (len > 0) Notify(buf, len);
       break;
     }
@@ -331,6 +332,37 @@ void BleConfigService::HandleWrite(const uint8_t* data, size_t length) {
       char address[kPrinterAddressCap] = {};
       bool haveSaved = LoadPrinterAddress(address, sizeof(address));
       size_t len = EncodePrinterSaved(haveSaved ? address : nullptr, buf, sizeof(buf));
+      if (len > 0) Notify(buf, len);
+      break;
+    }
+
+    case CmdType::kTimeZoneSet: {
+      int16_t offsetMinutes = 0;
+      bool useDst = false;
+      if (!ParseTimeZoneConfig(payload, header.payloadLength, offsetMinutes, useDst)) {
+        size_t len = EncodeError(header.type, ErrorCode::kMalformedPayload,
+                                 buf, sizeof(buf));
+        if (len > 0) Notify(buf, len);
+        return;
+      }
+
+      if (!wifi_->SaveTimeZone(offsetMinutes, useDst)) {
+        size_t len = EncodeError(header.type, ErrorCode::kNvsFailure,
+                                 buf, sizeof(buf));
+        if (len > 0) Notify(buf, len);
+        return;
+      }
+
+      size_t len = EncodeAck(header.type, buf, sizeof(buf));
+      if (len > 0) Notify(buf, len);
+      break;
+    }
+
+    case CmdType::kTimeZoneGetSaved: {
+      int16_t offsetMinutes = 0;
+      bool useDst = false;
+      bool configured = wifi_->LoadTimeZone(offsetMinutes, useDst);
+      size_t len = EncodeTimeZoneSaved(configured, offsetMinutes, useDst, buf, sizeof(buf));
       if (len > 0) Notify(buf, len);
       break;
     }
@@ -537,6 +569,7 @@ bool BleConfigService::LoadPrinterAddress(char* address, size_t cap) const {
 bool BleConfigService::SavePrinterAddress(const char* address) {
   const bool saved = printerManager_.SaveAddress(address);
   if (saved) {
+    printerConfigured_ = true;
     Serial.printf("BLE: saved printer address %s\n", address);
   }
   return saved;

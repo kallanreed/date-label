@@ -21,8 +21,14 @@ class WifiManager {
   WifiStatus status() const { return status_; }
   const char* ssid() const { return ssid_; }
   bool configured() const { return configured_; }
+  bool timeZoneConfigured() const { return timeZoneConfigured_; }
+  int16_t timeZoneOffsetMinutes() const { return timeZoneOffsetMinutes_; }
+  bool timeZoneUsesDst() const { return timeZoneUsesDst_; }
+  bool dstActive() const { return dstActive_; }
 
   bool LoadSaved(char* ssid, size_t ssidCap, char* pass, size_t passCap);
+  bool SaveTimeZone(int16_t offsetMinutes, bool useDst);
+  bool LoadTimeZone(int16_t& offsetMinutes, bool& useDst) const;
 
   bool scanning() const { return scanning_; }
   bool connecting() const { return connectPending_; }
@@ -30,12 +36,14 @@ class WifiManager {
 
   // Write "yyyy/MM/dd" into buf (must be >= 11 bytes). Returns true if time is valid.
   bool GetDateString(char* buf, size_t cap) const;
+  bool GetTimeDisplayString(char* buf, size_t cap) const;
 
  private:
   void AutoConnect();
   void SendStatus(NotifyFn notify);
   void CheckTimeSync();
   void RetryConnect(NotifyFn notify, int status, const char* reason);
+  int32_t CurrentUtcOffsetSeconds() const;
 
   WifiStatus status_ = WifiStatus::kIdle;
   char ssid_[33] = {};
@@ -43,8 +51,11 @@ class WifiManager {
   bool scanning_ = false;
   bool connectPending_ = false;
   bool configured_ = false;
+  bool timeZoneConfigured_ = false;
+  int16_t timeZoneOffsetMinutes_ = 0;
+  bool timeZoneUsesDst_ = false;
+  bool dstActive_ = false;
   bool timeSynced_ = false;
-  int32_t utcOffsetSeconds_ = 0;
   unsigned long lastTimeSyncMs_ = 0;
   unsigned long lastTimeSyncAttemptMs_ = 0;
   unsigned long connectStartMs_ = 0;

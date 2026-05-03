@@ -17,7 +17,6 @@ constexpr uint8_t kLedChannelRed = 0;
 constexpr uint8_t kLedChannelGreen = 1;
 constexpr uint8_t kLedChannelBlue = 2;
 constexpr unsigned long kButtonDebounceMs = 35;
-constexpr unsigned long kPrinterRefreshMs = 1000;
 
 bool IsPressedLevel(int level) {
   return level == LOW;
@@ -77,16 +76,7 @@ void DeviceUi::UpdateStatusLed(const WifiManager& wifi,
     nextState = StatusState::kNoWifi;
   } else if (!wifi.timeSynced()) {
     nextState = StatusState::kNoTime;
-  } else {
-    const unsigned long nowMs = millis();
-    if (lastPrinterRefreshMs_ == 0 ||
-        nowMs - lastPrinterRefreshMs_ >= kPrinterRefreshMs) {
-      printerConfigured_ = bleConfig.HasSavedPrinter();
-      lastPrinterRefreshMs_ = nowMs;
-    }
-  }
-
-  if (nextState == StatusState::kReady && !printerConfigured_) {
+  } else if (!bleConfig.HasSavedPrinter()) {
     nextState = StatusState::kNoPrinter;
   }
 

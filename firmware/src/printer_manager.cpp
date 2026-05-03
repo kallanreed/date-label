@@ -83,6 +83,10 @@ bool PrinterManager::LoadAddress(char* address, size_t cap) const {
 
   Preferences prefs;
   prefs.begin(config::kNvsNamespace, true);
+  if (!prefs.isKey(config::kNvsKeyPrinterAddr)) {
+    prefs.end();
+    return false;
+  }
   String saved = prefs.getString(config::kNvsKeyPrinterAddr, "");
   prefs.end();
 
