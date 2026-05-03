@@ -15,7 +15,6 @@ constexpr uint8_t kStatusLedMaxBrightness = 48;
 // ── D12 Printer BLE ──────────────────────────────────────────────────────
 constexpr char kPrinterServiceUuid[] = "0000ff00-0000-1000-8000-00805f9b34fb";
 constexpr char kPrinterWriteUuid[]   = "0000ff02-0000-1000-8000-00805f9b34fb";
-constexpr char kPrinterNotifyUuid[]  = "0000ff03-0000-1000-8000-00805f9b34fb";
 constexpr uint16_t kPrinterChunkSize = 64;
 constexpr uint16_t kPrinterChunkDelayMs = 12;
 constexpr uint16_t kPrinterChunkDelaySlowMs = 20;
@@ -29,17 +28,7 @@ constexpr char kConfigServiceUuid[] = "12345678-1234-1234-1234-123456789abc";
 constexpr char kConfigWriteUuid[]   = "12345678-1234-1234-1234-00000000ff01";
 constexpr char kConfigNotifyUuid[]  = "12345678-1234-1234-1234-00000000ff02";
 
-// ── Label Dimensions ─────────────────────────────────────────────────────
 constexpr uint16_t kMaxPrintWidthPx = 96;   // 12mm at 203 DPI
-constexpr uint16_t kLabelWidthMm = 15;
-constexpr uint16_t kLabelHeightMm = 40;
-
-// ── Date Rendering ───────────────────────────────────────────────────────
-constexpr uint8_t kFontCharWidth = 8;
-constexpr uint8_t kFontCharHeight = 14;
-constexpr uint8_t kFontCharGap = 1;
-// "yyyy/MM/dd" = 10 chars, 2 slashes
-constexpr uint8_t kDateStringLength = 10;
 
 // ── Time Sync ────────────────────────────────────────────────────────────
 constexpr char kTimeSyncHost[] = "time.nist.gov";

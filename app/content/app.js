@@ -40,8 +40,6 @@ const WIFI_STATUS_NAME = {
   0x00: "Idle",
   0x01: "Connecting...",
   0x02: "Connected",
-  0x03: "Failed",
-  0x04: "Saved (disconnected)",
 };
 
 const ERROR_NAME = {
@@ -58,7 +56,7 @@ const ERROR_NAME = {
 };
 
 const SCAN_TIMEOUT_MS = 15000;
-const BLE_DEBUG = true;
+const BLE_DEBUG = false;
 
 const state = {
   ble: {

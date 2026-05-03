@@ -43,8 +43,6 @@ enum class WifiStatus : uint8_t {
   kIdle = 0x00,
   kConnecting = 0x01,
   kConnected = 0x02,
-  kFailed = 0x03,
-  kSavedDisconnected = 0x04,
 };
 
 enum class ErrorCode : uint8_t {

@@ -102,7 +102,8 @@ class PrinterScanCallbacks : public ::NimBLEScanCallbacks {
 void BleConfigService::Begin(WifiManager& wifi) {
   wifi_ = &wifi;
   instance_ = this;
-  printerConfigured_ = HasSavedPrinter();
+  char savedPrinterAddress[kPrinterAddressCap] = {};
+  printerConfigured_ = LoadPrinterAddress(savedPrinterAddress, sizeof(savedPrinterAddress));
 
   NimBLEDevice::init(config::kBleDeviceName);
   NimBLEDevice::setMTU(247);

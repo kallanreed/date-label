@@ -1,335 +1,332 @@
-# ESP32 Date Printer — Firmware Spec
+# ESP32 Date Printer — Current Firmware Spec
 
-An ESP32 that prints the current date on a D12 thermal label printer
-when you press a button. Dot-matrix style font, format `yyyy/MM/dd`.
+This document describes the firmware and web UI that are implemented in this repository today.
+
+The device is a **Seeed XIAO ESP32C3** that:
+
+- stores WiFi credentials, printer binding, and timezone settings in NVS
+- exposes a custom BLE config service for phone-based setup
+- syncs UTC from **`time.nist.gov:13`** using the **Daytime protocol**
+- converts that UTC time to a local date using a saved UTC offset and optional DST handling
+- renders `yyyy/MM/dd` as a 1-bit bitmap
+- prints that bitmap to a **Labelnize / Nelko D12** over BLE
+- supports both a **web UI print button** and a **physical button** on the device
+- drives a compact **RGB status LED**
 
 ## Hardware
 
-- ESP32-C3 (or any ESP32 with BLE 5.0)
-- Momentary push button on a GPIO (e.g. GPIO9 on C3 dev boards — often has a boot button)
-- Optional: LED for status indication
+### Target board
 
-## High-Level Flow
+- **Seeed XIAO ESP32C3**
 
+### Current pin mapping
+
+| Function | XIAO Pin | GPIO |
+|---|---:|---:|
+| Status LED red | D1 | GPIO3 |
+| Status LED green | D2 | GPIO4 |
+| Status LED blue | D3 | GPIO5 |
+| Print button | D4 | GPIO6 |
+
+### Electrical assumptions
+
+- RGB LED is currently configured as **common-cathode**
+- Button is wired from **D4 to GND**
+- Button input uses **`INPUT_PULLUP`**
+- LED brightness is intentionally capped below full duty cycle to reduce power draw
+
+## High-level flow
+
+```text
+Boot
+  ├─ Initialize NVS
+  ├─ Load saved WiFi config
+  ├─ Load saved timezone config
+  ├─ Load saved printer binding state
+  ├─ Start BLE config service
+  ├─ Start hardware UI (button + RGB LED)
+  └─ Main loop
+       ├─ Poll WiFi manager
+       ├─ Keep time synced from NIST Daytime when WiFi is connected
+       ├─ Handle BLE config commands
+       ├─ Handle preview bitmap transfer
+       ├─ Handle print requests
+       └─ Update button/LED state
 ```
-Power on
-  ├─ Load config from NVS (WiFi creds, printer BLE address)
-  ├─ If not configured → start BLE config service, blink LED
-  └─ If configured:
-       ├─ Connect WiFi → NTP sync → got the date
-       ├─ Idle (low power), BLE config still available
-       └─ Button press:
-            ├─ Connect to D12 over BLE (saved address)
-            ├─ Render date as 1-bit bitmap
-            ├─ Send AY/ESC print payload
-            └─ Disconnect, return to idle
-```
 
-## BLE Configuration Service (Peripheral Role)
+## BLE configuration service
 
-The ESP32 advertises a custom GATT service for phone-based setup.
-Could use Espressif's WiFi provisioning library, or a simple custom service:
+The ESP32 advertises as **`DatePrinter`** with:
 
-### Service UUID: `12345678-1234-1234-1234-123456789abc` (pick your own)
+- **Service UUID:** `12345678-1234-1234-1234-123456789abc`
+- **Write characteristic:** `12345678-1234-1234-1234-00000000ff01`
+- **Notify/indicate characteristic:** `12345678-1234-1234-1234-00000000ff02`
 
-| Characteristic       | UUID  | Properties     | Format                        |
-|-----------------------|-------|----------------|-------------------------------|
-| WiFi Scan Trigger     | 0001  | Write          | Write `0x01` to start scan    |
-| WiFi Scan Results     | 0002  | Read, Notify   | `SSID\0RSSI\n` per network    |
-| WiFi Config           | 0003  | Write          | `SSID\0password` (UTF-8)      |
-| WiFi Status           | 0004  | Read, Notify   | 1 byte: 0=none 1=connecting 2=ok 3=fail |
-| Printer Scan Trigger  | 0005  | Write          | Write `0x01` to start scan    |
-| Printer Scan Results  | 0006  | Read, Notify   | `name\0address\n` per device  |
-| Printer Bind          | 0007  | Write          | BLE address string to save    |
-| Printer Bound         | 0008  | Read           | Currently saved address       |
-| Device Status         | 0009  | Read, Notify   | 0=setup 1=ready 2=printing 3=error |
+Messages use a simple frame:
 
-### WiFi Discovery
+- byte 0: message type
+- byte 1: payload length
+- bytes 2..N: payload
 
-When WiFi scan is triggered:
-1. ESP32 calls `WiFi.scanNetworks()`
-2. Returns list of SSIDs with RSSI (signal strength)
-3. Writes results to WiFi Scan Results characteristic
-4. Phone shows the list, user picks a network
-5. Phone prompts for password
-6. Phone writes `SSID\0password` to WiFi Config
-7. ESP32 tries to connect, updates WiFi Status (notify)
-8. On success, saves creds to NVS
+### Implemented commands
 
-### Printer Discovery
+| Command | Value | Purpose |
+|---|---:|---|
+| `kWifiScan` | `0x01` | Scan for nearby WiFi networks |
+| `kWifiConnect` | `0x02` | Save WiFi credentials and connect |
+| `kWifiGetStatus` | `0x03` | Get current WiFi status |
+| `kWifiGetSaved` | `0x04` | Get saved WiFi SSID/password |
+| `kWifiClear` | `0x05` | Clear all saved config |
+| `kGetTimeStatus` | `0x06` | Get current local device time |
+| `kGetDateBitmap` | `0x07` | Stream rendered date bitmap |
+| `kPrinterScan` | `0x08` | Scan for D12 printers |
+| `kPrinterBind` | `0x09` | Save printer BLE address |
+| `kPrinterGetSaved` | `0x0A` | Get saved printer address |
+| `kPrintLabel` | `0x0B` | Print the current label |
+| `kTimeZoneSet` | `0x0C` | Save timezone offset + DST mode |
+| `kTimeZoneGetSaved` | `0x0D` | Get saved timezone config |
 
-When printer scan is triggered:
-1. ESP32 scans BLE for devices advertising service `0000ff00-...` or name containing "D12"
-2. Collects results for ~10 seconds
-3. Writes results to Printer Scan Results characteristic
-4. Phone reads results, user picks one
-5. Phone writes chosen address to Printer Bind
-6. ESP32 saves to NVS
+### Implemented responses
 
-## D12 AY/ESC Print Protocol
+| Response | Value | Purpose |
+|---|---:|---|
+| `kWifiScanResult` | `0x81` | One WiFi scan result |
+| `kWifiScanDone` | `0x82` | WiFi scan complete |
+| `kWifiStatus` | `0x83` | WiFi status update |
+| `kWifiSaved` | `0x84` | Saved WiFi config |
+| `kAck` | `0x85` | Command completed |
+| `kError` | `0x86` | Command failed |
+| `kTimeStatus` | `0x87` | Current local time string |
+| `kDateBitmapHeader` | `0x88` | Bitmap size header |
+| `kDateBitmapData` | `0x89` | Bitmap chunk |
+| `kPrinterScanResult` | `0x8A` | One printer scan result |
+| `kPrinterScanDone` | `0x8B` | Printer scan complete |
+| `kPrinterSaved` | `0x8C` | Saved printer address |
+| `kTimeZoneSaved` | `0x8D` | Saved timezone config |
 
-Full protocol documented in `PROTOCOL.md`. Summary of what the ESP32 needs to send:
+## Web UI
 
-### BLE Connection
+The web app is a compact mobile-oriented SPA using Web Bluetooth.
+
+### Current sections
+
+1. **Device**
+   - Connect / disconnect from the ESP32
+
+2. **Status**
+   - WiFi summary
+   - Current local device time
+
+3. **Config**
+   - WiFi SSID row with inline editor
+   - Printer row with inline editor
+   - Time Zone row with inline editor
+   - Clear Config button
+
+4. **Label Preview**
+   - Refresh Preview
+   - Print Label
+
+### Current timezone UX
+
+Timezone is saved as:
+
+- a fixed **UTC offset** in minutes
+- plus a boolean **"Use NIST DST flag"**
+
+Example input:
+
+- `-07:00`
+- `+01:00`
+- `+05:30`
+
+When DST mode is enabled, the firmware uses the Daytime **TT** field:
+
+- `TT > 0 && TT <= 50` => DST active
+- other values => standard time
+
+## Time sync
+
+### Current implementation
+
+Time sync no longer uses HTTPS or the old cloud date endpoint.
+
+The firmware now:
+
+1. connects to **`time.nist.gov`**
+2. opens TCP **port 13**
+3. reads the NIST **Daytime** ASCII line
+4. parses the UTC timestamp and TT field
+5. stores UTC in the device clock with `settimeofday()`
+6. derives local time from:
+   - saved UTC offset
+   - optional DST adjustment using TT
+
+### Notes
+
+- The NIST server may send a leading blank line before the actual record; firmware skips blank lines.
+- If timezone has not been configured, local date/time are treated as unavailable even if UTC sync succeeded.
+
+## WiFi behavior
+
+### Current behavior
+
+- saved WiFi credentials are loaded from NVS at boot
+- the device auto-connects when credentials exist
+- on connection failure or disconnect, the firmware retries
+- WiFi scan results are streamed over BLE as individual result messages
+- successful WiFi connection saves the credentials in NVS
+
+### NVS keys
+
+| Key | Type | Meaning |
+|---|---|---|
+| `wifi_ssid` | string | Saved WiFi SSID |
+| `wifi_pass` | string | Saved WiFi password |
+| `printer_addr` | string | Saved D12 BLE address |
+| `configured` | u8 | WiFi credentials configured |
+| `tz_offset` | i16 | Saved UTC offset in minutes |
+| `tz_dst` | u8 | Whether DST-from-TT is enabled |
+| `tz_set` | u8 | Timezone configured flag |
+
+### Clear Config behavior
+
+The current `Clear Config` action clears **all** saved config:
+
+- WiFi SSID
+- WiFi password
+- printer address
+- timezone offset
+- timezone DST flag
+- configured flags
+
+## Printer setup and printing
+
+### Printer discovery
+
+The ESP32 scans for BLE devices that either:
+
+- advertise service `0000ff00-0000-1000-8000-00805f9b34fb`
+- or contain `D12` in the device name
+
+Selected printer address is stored in NVS.
+
+### D12 BLE parameters
 
 | Parameter | Value |
-|-----------|-------|
-| Service   | `0000ff00-0000-1000-8000-00805f9b34fb` |
-| Write     | `0000ff02-0000-1000-8000-00805f9b34fb` |
-| Notify    | `0000ff03-0000-1000-8000-00805f9b34fb` |
-| Write Type | Write Without Response |
-| Chunk Size | 1024 bytes, 5ms delay between chunks |
+|---|---|
+| Service | `0000ff00-0000-1000-8000-00805f9b34fb` |
+| Write characteristic | `0000ff02-0000-1000-8000-00805f9b34fb` |
+| Write type | Write Without Response |
 
-### Print Payload (concatenated binary)
+### Current print transport tuning
 
-```
-10 FF FE 01                          // Enable
-00 00 00 00 00 00 00 00 00 00 00 00  // Wakeup (12 null bytes)
-1B 61 01                             // Location = CENTER
-10 FF 10 00 03                       // Density = 3
-10 FF 10 03 00                       // Paper type = gap labels
+These values are tuned for the XIAO ESP32C3:
 
-// Compressed image:
-1F 00                                // Compressed image header
-[w_hi] [w_lo]                        // Width in bytes (big-endian)
-[h_hi] [h_lo]                        // Height in pixels (big-endian)
-[len3] [len2] [len1] [len0]          // Compressed data length (big-endian, = len - 2)
-[deflate data without 2-byte header] // zlib output starting at byte 2
+| Setting | Value |
+|---|---:|
+| Chunk size | 64 bytes |
+| Chunk delay | 12 ms |
+| Slow chunk delay | 20 ms |
+| Final delay before disconnect | 750 ms |
 
-// OR uncompressed image (recommended for small images):
-1D 76 30                             // GS v 0
-00                                   // Mode = normal
-[w_lo] [w_hi]                        // Width in bytes (little-endian!)
-[h_lo] [h_hi]                        // Height in pixels (little-endian!)
-[raw bitmap data]                    // 1-bit MSB-first
+The firmware connects to the printer on demand for each print job, sends the full payload, waits, then disconnects.
 
-1B 4A 0A                             // Line advance 10 dots
-1D 0C                                // Gap detection
-10 FF FE 45                          // Stop job (triggers print)
-```
+### Print payload
 
-### Image Encoding
+The firmware uses the D12 **AY / ESC** binary protocol documented in `docs/PROTOCOL.md`.
 
-- 1-bit monochrome, MSB first (leftmost pixel = bit 7)
-- Row-major, top to bottom
-- Each row: `ceil(width / 8)` bytes, padded
-- Black pixel = bit set to 1
-- For compressed: use zlib deflate with wbits=10, strip first 2 bytes of output
-- For uncompressed: send raw (no inversion needed for ESC mode)
+Current sequence:
 
-**Recommendation: use uncompressed for simplicity.** The date label is tiny (~90x20 pixels = ~225 bytes). Not worth the complexity of zlib on ESP32 for this payload size.
+1. Enable
+2. Wakeup (12 zero bytes)
+3. Centered location
+4. Density = 3
+5. Gap-label paper type
+6. Uncompressed `GS v 0` bitmap image
+7. Line advance
+8. Gap detect
+9. Stop/print command
 
-## Date Rendering
+## Date rendering
 
-### Font: Dot-Matrix Style
+### Current output
 
-- Format: `yyyy/MM/dd` → e.g. `2026/05/01`
-- Characters needed: `0123456789/`
-- 11 characters total per date string
+- date format: **`yyyy/MM/dd`**
+- rendered as a **1-bit monochrome bitmap**
+- rotated **90° clockwise**
+- centered within the printer width constraint
 
-**Font design guidelines:**
-- Monospace bitmap font, approximately 8px wide x 14-16px tall
-- 1px gap between characters
-- Designed to look like a 9-pin or 24-pin dot matrix printer output
-- Strokes formed from individual dots rather than solid fills
-- Slight roughness/texture is the goal
+### Width limit
 
-**Rendering approach:**
-- Store font as `const uint8_t[]` in flash (PROGMEM)
-- Each character: 1 byte per row x height rows
-- To render a string: blit each character into a framebuffer
-- Framebuffer is the final bitmap sent to the printer
+- max print width: **96 px**
 
-### Label Dimensions
+## Physical controls
 
-- D12 default label: 15mm x 40mm (width x height)
-- DPI: 203
-- Max print width: ~96 pixels (12mm)
-- Available height: ~320 pixels (40mm)
-- Date image: ~99px wide x 16px tall (fits width, centered on label height)
+### Button
 
-Consider rotating 90 degrees if you want the text along the long axis of the label.
+- physical button press queues the same print flow used by the web UI
+- debounced in firmware
+- uses the saved WiFi, timezone, and printer configuration
 
-## NVS Storage Layout
+### RGB status LED
 
-| Key             | Type   | Content                 |
-|-----------------|--------|-------------------------|
-| `wifi_ssid`     | string | WiFi SSID               |
-| `wifi_pass`     | string | WiFi password           |
-| `printer_addr`  | string | D12 BLE address         |
-| `configured`    | u8     | 0=no 1=yes              |
+Current states:
 
-## Dependencies (Arduino)
+| State | Color |
+|---|---|
+| Unconfigured | Red |
+| No WiFi | Orange |
+| No time | Yellow |
+| No printer | Blue |
+| Printing | White |
+| Ready | Green |
 
-- `NimBLE-Arduino` — BLE peripheral + central simultaneously
-- `WiFi.h` — built-in ESP32 WiFi
-- `time.h` — NTP via `configTime()` (built-in, no library needed)
-- `Preferences.h` — NVS wrapper (built-in)
-- No graphics library needed — just manual bitmap blitting
+## State model
 
-## State Machine
+The current device behavior is best described as:
 
-```
+```text
 BOOT
-  |
-  |--[not configured]-->  CONFIG_MODE
-  |                        - Advertising BLE config service
-  |                        - LED blinking
-  |                        - Waiting for WiFi + printer setup
-  |                        |
-  |                        +--[configured]--> READY
-  |
-  +--[configured]-->  WIFI_CONNECT
-                       |
-                       |--[connected]--> NTP_SYNC --> READY
-                       |                              - LED solid
-                       |                              - BLE config still available
-                       |                              - Waiting for button
-                       |                              |
-                       |                              +--[button press]--> PRINTING
-                       |                                                   - Connect D12
-                       |                                                   - Render + send
-                       |                                                   - Disconnect
-                       |                                                   +--> READY
-                       |
-                       +--[failed]--> CONFIG_MODE
+  ├─ BLE config service starts
+  ├─ hardware UI starts
+  └─ if WiFi creds exist:
+       └─ connect WiFi
+            └─ sync UTC from NIST Daytime
+
+READY CONDITIONS
+  - WiFi configured
+  - WiFi connected
+  - timezone configured
+  - time synced
+  - printer configured
+
+PRINT FLOW
+  - request from web UI or physical button
+  - render date bitmap
+  - connect to D12
+  - stream print payload
+  - disconnect
+  - return to ready
 ```
 
-## Query Commands (Optional, for status display in config app)
+## Dependencies
 
-| Purpose    | Bytes          | Response             |
-|------------|----------------|----------------------|
-| Version    | `10 FF 20 F1`  | ASCII e.g. `V1.0.4`  |
-| Battery    | `10 FF 50 F1`  | [charging, level%]   |
-| State      | `10 FF 4F F1`  | Status bytes         |
+### Firmware
 
-## Web BLE Configuration App (SPA)
+- `NimBLE-Arduino`
+- `WiFi.h`
+- `WiFiClient`
+- `Preferences.h`
 
-A single-page web app for configuring the ESP32 over Bluetooth.
-No install, works on any device with Chrome (desktop or mobile).
-Can be hosted on GitHub Pages or served locally.
+### Frontend
 
-### Tech Stack
-
-- Vanilla HTML/CSS/JS (no framework needed — it's ~3 screens)
-- Web Bluetooth API (`navigator.bluetooth`)
-- No backend — everything happens client-side over BLE
-
-### Web Bluetooth Connection
-
-```js
-const device = await navigator.bluetooth.requestDevice({
-  filters: [{ services: ['12345678-1234-1234-1234-123456789abc'] }],
-  // or filter by name prefix:
-  // filters: [{ namePrefix: 'DatePrinter' }],
-});
-const server = await device.gatt.connect();
-const service = await server.getPrimaryService('12345678-1234-1234-1234-123456789abc');
-// Then get characteristics by UUID...
-```
-
-### UI Flow
-
-```
-+-----------------------------------+
-|  [Connect to DatePrinter]         |   <-- requestDevice() prompt
-+-----------------+-----------------+
-                  |
-+-----------------v-----------------+
-|  WiFi Setup                       |
-|                                   |
-|  [Scan Networks]                  |   <-- write 0x01 to WiFi Scan Trigger
-|                                   |
-|  +---------------------------+    |
-|  | MyNetwork        -42 dB  | <- |   <-- read WiFi Scan Results
-|  | Neighbors5G      -67 dB  |    |
-|  | IoTNet           -71 dB  |    |
-|  +---------------------------+    |
-|                                   |
-|  Password: [______________]       |
-|  [Connect]                        |   <-- write SSID\0pass to WiFi Config
-|                                   |
-|  Status: * Connected              |   <-- subscribe to WiFi Status notify
-+-----------------+-----------------+
-                  |
-+-----------------v-----------------+
-|  Printer Setup                    |
-|                                   |
-|  [Scan for Printers]              |   <-- write 0x01 to Printer Scan Trigger
-|                                   |
-|  +---------------------------+    |
-|  | D12_9038_BLE       [Bind] | <- |   <-- read Printer Scan Results
-|  | D12_A4C2_BLE       [Bind] |    |
-|  +---------------------------+    |
-|                                   |
-|  Bound: D12_9038_BLE              |   <-- read Printer Bound
-+-----------------+-----------------+
-                  |
-+-----------------v-----------------+
-|  Status                           |
-|                                   |
-|  WiFi: Connected (MyNetwork)      |
-|  Printer: D12_9038_BLE            |
-|  Device: Ready                    |   <-- subscribe to Device Status notify
-|                                   |
-|  [Print Test Label]               |   <-- optional: trigger a test print
-|  [Reset Config]                   |
-+-----------------------------------+
-```
-
-### Characteristic Interaction Pattern
-
-```js
-// Example: WiFi scan flow
-const scanTrigger = await service.getCharacteristic(0x0001);
-const scanResults = await service.getCharacteristic(0x0002);
-
-// Subscribe to results notification
-scanResults.addEventListener('characteristicvaluechanged', (e) => {
-  const text = new TextDecoder().decode(e.target.value);
-  // Parse "SSID\0RSSI\nSSID2\0RSSI2\n..."
-  displayNetworks(text);
-});
-await scanResults.startNotifications();
-
-// Trigger scan
-await scanTrigger.writeValue(new Uint8Array([0x01]));
-```
-
-### BLE Data Chunking
-
-BLE characteristics have a max value size (~512 bytes with negotiated MTU, often 20 bytes default).
-If scan results exceed this:
-- ESP32 sends multiple notifications, one per result
-- Or paginate: write an offset to read more
-- Simplest: one notification per scan result, with a `0x00` terminator notification when done
-
-### Hosting
-
-- **GitHub Pages** — push `index.html` to a repo, free HTTPS (required for Web Bluetooth)
-- **Local** — `python -m http.server` won't work (needs HTTPS). Use `npx serve` or similar
-- **Embedded in ESP32** — possible via ESPAsyncWebServer over WiFi, but adds complexity.
-  Better to keep it separate.
-
-### Browser Support
-
-- Chrome (desktop + Android): Full support
-- Edge: Full support
-- Safari/iOS: Not supported (no Web Bluetooth). Users would need a native app or use a computer.
-- Firefox: Not supported (behind a flag, unreliable)
-
-### Styling
-
-Keep it minimal — the whole app is a setup wizard you use once. A clean card-based layout
-with a monospace/dot-matrix font for the header would be a nice thematic touch.
+- vanilla HTML/CSS/JS
+- Web Bluetooth API
 
 ## Notes
 
-- The D12 auto-sleeps quickly. The ESP32 should connect, print, and disconnect
-  promptly. May need to retry connection if printer is asleep.
-- BLE central + peripheral simultaneously works on ESP32 with NimBLE.
-  The config service stays active even while connecting to the printer.
-- For the dot-matrix font: search for "IBM PC 437" or "Epson FX-80" bitmap fonts
-  for authentic reference. Or hand-design ~12 characters for maximum charm.
-- Button debouncing: 50ms is fine for a physical button.
-- Consider deep sleep between presses to save battery if running on USB power bank.
+- Web Bluetooth still requires HTTPS hosting for the setup app.
+- Safari/iOS still does not support Web Bluetooth.
+- The old cloud-based date helper is no longer part of the active time-sync path.
+- The D12 auto-sleeps quickly, so the firmware is intentionally connect/print/disconnect rather than maintaining a persistent BLE connection.
