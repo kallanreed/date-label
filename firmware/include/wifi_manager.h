@@ -61,7 +61,7 @@ class WifiManager {
   unsigned long connectStartMs_ = 0;
   static constexpr unsigned long kConnectTimeoutMs = 30000;
   static constexpr unsigned long kTimeSyncRefreshMs = 12UL * 60UL * 60UL * 1000UL;
-  static constexpr unsigned long kTimeSyncRetryMs = 60UL * 1000UL;
+  static constexpr unsigned long kTimeSyncRetryMs = 10UL * 1000UL;
 };
 
 }  // namespace date_label

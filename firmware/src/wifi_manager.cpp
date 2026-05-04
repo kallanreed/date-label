@@ -29,7 +29,6 @@ const char* WifiStatusName(wl_status_t status) {
 }
 
 bool ParseDaytimeResponse(const String& line, struct tm& out, uint8_t& tt) {
-  int mjd = 0;
   int year = 0;
   int month = 0;
   int day = 0;
@@ -37,22 +36,21 @@ bool ParseDaytimeResponse(const String& line, struct tm& out, uint8_t& tt) {
   int minute = 0;
   int second = 0;
   int ttValue = 0;
-  int leap = 0;
-  char dut1[8] = {};
-  char msAdvance[8] = {};
-  char label[16] = {};
-  char marker = '\0';
 
   const int parsed = sscanf(
       line.c_str(),
-      "%d %2d-%2d-%2d %2d:%2d:%2d %2d %1d %7s %7s %15s %c",
-      &mjd, &year, &month, &day, &hour, &minute, &second,
-      &ttValue, &leap, dut1, msAdvance, label, &marker);
-  if (parsed != 13) return false;
-  if (strcmp(label, "UTC(NIST)") != 0) return false;
+      "%*d %2d-%2d-%2d %2d:%2d:%2d %2d",
+      &year, &month, &day, &hour, &minute, &second, &ttValue);
+  if (parsed != 7) return false;
+
+  if (month < 1 || month > 12 || day < 1 || day > 31 ||
+      hour < 0 || hour > 23 || minute < 0 || minute > 59 ||
+      second < 0 || second > 60 || ttValue < 0 || ttValue > 99) {
+    return false;
+  }
 
   memset(&out, 0, sizeof(out));
-  out.tm_year = (year >= 70 ? year : year + 100);
+  out.tm_year = year + 100;  // struct tm stores years since 1900.
   out.tm_mon = month - 1;
   out.tm_mday = day;
   out.tm_hour = hour;
@@ -115,10 +113,12 @@ void WifiManager::RetryConnect(NotifyFn notify, int status, const char* reason) 
       "WiFi: retrying \"%s\" after %s (status=%s/%d)\n",
       ssid_, reason,
       WifiStatusName(static_cast<wl_status_t>(status)), status);
+  WiFi.disconnect();
+  delay(100);
+  WiFi.begin(ssid_, pass_);
   status_ = WifiStatus::kConnecting;
   connectPending_ = true;
   connectStartMs_ = millis();
-  WiFi.reconnect();
   SendStatus(notify);
 }
 
@@ -328,14 +328,19 @@ void WifiManager::CheckTimeSync() {
   lastTimeSyncAttemptMs_ = nowMs;
 
   WiFiClient client;
-  client.setTimeout(5000);
-  if (!client.connect(config::kTimeSyncHost, config::kTimeSyncPort)) {
+  client.setTimeout(2000);
+  if (!client.connect(config::kTimeSyncHost, config::kTimeSyncPort, 2000)) {
     Serial.println("WiFi: time sync TCP connect failed");
     return;
   }
 
+  // Wait for data before reading — readStringUntil returns empty if
+  // nothing is buffered. The client timeout covers the overall wait.
   String line;
   for (uint8_t attempt = 0; attempt < 4; ++attempt) {
+    while (!client.available() && client.connected()) {
+      delay(10);
+    }
     line = client.readStringUntil('\n');
     line.trim();
     if (line.length() > 0) break;

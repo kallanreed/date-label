@@ -2,6 +2,8 @@
 
 This document describes the firmware and web UI that are implemented in this repository today.
 
+For a quick operator guide, see [HOW_TO_USE.md](./HOW_TO_USE.md).
+
 The device is a **Seeed XIAO ESP32C3** that:
 
 - stores WiFi credentials, printer binding, and timezone settings in NVS
