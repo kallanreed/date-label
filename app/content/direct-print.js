@@ -12,7 +12,8 @@ const PRINTER_BLE = {
 const LABEL_W = 320;  // canvas width  (40 mm @ 203 DPI)
 const LABEL_H = 96;   // canvas height (12 mm @ 203 DPI)
 
-const CHUNK_SIZE     = 1024;
+// Web Bluetooth writeValueWithoutResponse is capped at 512 bytes by the browser.
+const CHUNK_SIZE     = 512;
 const CHUNK_DELAY_MS = 5;
 
 // AY/ESC binary command bytes
@@ -166,10 +167,32 @@ async function fetchPrinterInfo() {
     const ver   = await queryPrinter(CMD_VERSION);
     const parts = [];
     if (bat && bat.length >= 2) {
-      parts.push(`Battery: ${bat[1]}%${bat[0] === 0x02 ? " ⚡" : ""}`);
+      // The AY response may echo the 4-byte command header before the data.
+      // Try the documented 2-byte format [charging_flag, level%] first, then
+      // fall back to the echoed-command format (header + [charging_flag, level%]).
+      let chargingFlag, battLevel;
+      if (bat[1] <= 100) {
+        // Documented format: first byte is charging flag, second is level %.
+        chargingFlag = bat[0];
+        battLevel    = bat[1];
+      } else if (bat.length >= 6 && bat[5] <= 100) {
+        // Echo-prefixed format: 4-byte command echo followed by [flag, level%].
+        chargingFlag = bat[4];
+        battLevel    = bat[5];
+      } else {
+        // Unknown format – clamp whatever we have and show it.
+        chargingFlag = bat[0];
+        battLevel    = Math.min(100, bat[1]);
+      }
+      parts.push(`Battery: ${battLevel}%${chargingFlag === 0x02 ? " ⚡" : ""}`);
     }
     if (ver && ver.length > 0) {
-      const text = new TextDecoder().decode(ver).replace(/\0/g, "").trim();
+      // Filter to printable ASCII only (same as Python's decode("ascii", errors="ignore")).
+      const text = Array.from(ver)
+        .filter(b => b >= 0x20 && b < 0x7F)
+        .map(b => String.fromCharCode(b))
+        .join("")
+        .trim();
       if (text) parts.push(`FW: ${text}`);
     }
     if (ui.printerInfo && parts.length) ui.printerInfo.textContent = parts.join(" · ");
