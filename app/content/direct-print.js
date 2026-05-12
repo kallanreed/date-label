@@ -157,8 +157,9 @@ async function writePrintPayloadWithChunkSize(payload, chunkSize, chunkDelayMs) 
     const chunk = payload.slice(off, off + chunkSize);
     try {
       await writeBytes(chunk);
-    } catch {
+    } catch (err) {
       // One retry for transient BLE queue overrun errors.
+      void err;
       await new Promise((r) => setTimeout(r, chunkDelayMs * 2));
       await writeBytes(chunk);
     }
@@ -185,7 +186,7 @@ async function writePrintPayload(payload) {
     }
   }
 
-  throw lastErr || new Error("Failed to send print payload.");
+  throw lastErr;
 }
 
 async function fetchPrinterInfo() {
