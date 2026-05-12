@@ -237,13 +237,14 @@ async function loadImage(file) {
 // brightness: -100 to +100 (shifts pixel values by up to ±255)
 // contrast:   -100 to +100 (standard photoshop-style midpoint scaling)
 function applyBrightnessContrast(gray, brightness, contrast) {
-  const bShift = brightness * 2.55;
-  // Map contrast [-100, 100] → [-255, 255] then apply standard formula.
-  const c      = contrast * 2.55;
-  const factor = (259 * (c + 255)) / (255 * (259 - c));
+  const brightnessShift = brightness * 2.55;
+  // Map contrast [-100, 100] → [-255, 255] and apply the standard
+  // Photoshop-style formula: factor = (259*(c+255)) / (255*(259-c))
+  const contrastScaled = contrast * 2.55;
+  const factor = (259 * (contrastScaled + 255)) / (255 * (259 - contrastScaled));
 
   return new Float32Array(gray.map((v) => {
-    let val = factor * ((v + bShift) - 128) + 128;
+    let val = factor * ((v + brightnessShift) - 128) + 128;
     return Math.max(0, Math.min(255, val));
   }));
 }
@@ -663,9 +664,9 @@ function renderApp(root) {
 
   ui.textInput.addEventListener("input", () => {
     state.text.content = ui.textInput.value;
-    // Reset position to top-left when text is first entered.
+    // Reset position to top-left (2px margin) when text is first entered.
     if (state.text.content && state.image.rawGray) {
-      state.text.x = 2;
+      state.text.x = 2;  // 2-dot left margin
       state.text.y = 0;
     }
     updateUI();
