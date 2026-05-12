@@ -190,7 +190,7 @@ async function writePrintPayload(payload) {
     }
   }
 
-  throw lastErr;
+  throw new Error(`Print payload failed after trying chunk sizes ${chunkSizes.join(", ")}B: ${lastErr.message}`);
 }
 
 async function fetchPrinterInfo() {
