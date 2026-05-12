@@ -91,10 +91,19 @@ function handleDisconnect() {
   updateUI();
 }
 
+// Known D12-family printer name prefixes.
+// These devices often don't advertise their service UUID, so we combine
+// name-prefix filters with acceptAllDevices as a fallback via optionalServices.
+const D12_NAME_PREFIXES = ["D11", "D110", "D30", "B21", "B3S", "GT01", "GT-01", "GB02", "YBB"];
+
 async function connectPrinter() {
   if (!state.ble.supported) throw new Error("Web Bluetooth is not available.");
+  // Use acceptAllDevices + optionalServices so the device appears in the picker
+  // even when it doesn't advertise the service UUID in its advertisement packets
+  // (which is common for D12-family printers).
   const device = await navigator.bluetooth.requestDevice({
-    filters: [{ services: [PRINTER_BLE.serviceUuid] }],
+    acceptAllDevices: true,
+    optionalServices: [PRINTER_BLE.serviceUuid],
   });
   device.addEventListener("gattserverdisconnected", handleDisconnect);
   const server     = await device.gatt.connect();
