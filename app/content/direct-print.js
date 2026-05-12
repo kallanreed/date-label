@@ -106,8 +106,8 @@ async function disconnectPrinter() {
   handleDisconnect();
 }
 
-// Send a query command and collect notifications for `waitMs` milliseconds.
-async function queryPrinter(cmdBytes, waitMs = 600) {
+// Send a query command and collect notifications for `responseTimeoutMs` milliseconds.
+async function queryPrinter(cmdBytes, responseTimeoutMs = 600) {
   if (!state.ble.writeChar || !state.ble.notifyChar) return null;
 
   const chunks = [];
@@ -117,7 +117,7 @@ async function queryPrinter(cmdBytes, waitMs = 600) {
 
   state.ble.notifyChar.addEventListener("characteristicvaluechanged", handler);
   await writeBytes(cmdBytes);
-  await new Promise((r) => setTimeout(r, waitMs));
+  await new Promise((r) => setTimeout(r, responseTimeoutMs));
   state.ble.notifyChar.removeEventListener("characteristicvaluechanged", handler);
 
   const total  = chunks.reduce((s, c) => s + c.length, 0);
@@ -201,7 +201,7 @@ async function loadImage(file) {
   ctx.fillRect(0, 0, w, h);
   ctx.drawImage(img, 0, 0, w, h);
 
-  // Convert RGBA pixels to grayscale using standard luminance weights.
+  // Convert RGBA pixels to grayscale using ITU-R BT.601 luma coefficients.
   const px   = ctx.getImageData(0, 0, w, h).data;
   const gray = new Float32Array(w * h);
   for (let i = 0; i < w * h; i++) {
@@ -326,13 +326,14 @@ function drawPreview(pixels, width, height) {
 // Sequence: ENABLE → WAKEUP → LOCATION → DENSITY → PAPER_TYPE → IMAGE →
 //           LINE_DOT → POSITION → STOP_JOB
 function buildPrintPayload(bitmap, width, height, density) {
+  const clampedDensity = Math.max(1, Math.min(15, Math.round(density)));
   const bytesPerRow = Math.ceil(width / 8);
 
   const parts = [
     new Uint8Array(CMD_ENABLE),
     new Uint8Array(CMD_WAKEUP),
     new Uint8Array(CMD_LOCATION_CTR),
-    new Uint8Array([0x10, 0xFF, 0x10, 0x00, density]),        // density
+    new Uint8Array([0x10, 0xFF, 0x10, 0x00, clampedDensity]),  // density
     new Uint8Array([0x10, 0xFF, 0x10, 0x03, 0x00]),            // paper: gap (0)
     // GS v 0: uncompressed image — widths and heights are little-endian
     new Uint8Array([
@@ -479,7 +480,11 @@ function renderApp(root) {
     try {
       await loadImage(file);
     } catch (err) {
-      if (ui.previewStatus) ui.previewStatus.textContent = `Error: ${err.message}`;
+      const isDecodeError = err instanceof DOMException || err.message.includes("decode");
+      const msg = isDecodeError
+        ? "Could not decode image. Try a different PNG or JPEG file."
+        : `Error loading image: ${err.message}`;
+      if (ui.previewStatus) ui.previewStatus.textContent = msg;
     }
     // Reset so the same file can be re-selected after an invert/dither change.
     ui.fileInput.value = "";
