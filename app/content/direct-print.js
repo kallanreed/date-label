@@ -265,9 +265,7 @@ function syncImageSliders() {
   ui.imgWRange.value       = state.image.drawW;
   ui.imgWValue.textContent = `${state.image.drawW}px`;
   ui.imgXRange.value       = state.image.x;
-  ui.imgXValue.textContent = state.image.x;
   ui.imgYRange.value       = state.image.y;
-  ui.imgYValue.textContent = state.image.y;
 }
 
 // ── Image processing ──────────────────────────────────────────────────────
@@ -544,10 +542,8 @@ function renderApp(root) {
           <div class="dp-row">
             <span class="dp-label">X</span>
             <input id="img-x-range" type="range" min="-320" max="320" value="0" style="flex:1;" />
-            <span id="img-x-value" class="dp-val">0</span>
             <span class="dp-label">Y</span>
             <input id="img-y-range" type="range" min="-96" max="96" value="0" style="flex:1;" />
-            <span id="img-y-value" class="dp-val">0</span>
           </div>
         </div>
 
@@ -574,10 +570,8 @@ function renderApp(root) {
           <div class="dp-row">
             <span class="dp-label">X</span>
             <input id="text-x-range" type="range" min="-320" max="320" value="0" style="flex:1;" />
-            <span id="text-x-value" class="dp-val">0</span>
             <span class="dp-label">Y</span>
             <input id="text-y-range" type="range" min="-96" max="96" value="0" style="flex:1;" />
-            <span id="text-y-value" class="dp-val">0</span>
           </div>
         </div>
 
@@ -629,9 +623,7 @@ function renderApp(root) {
   ui.imgWRange         = root.querySelector("#img-w-range");
   ui.imgWValue         = root.querySelector("#img-w-value");
   ui.imgXRange         = root.querySelector("#img-x-range");
-  ui.imgXValue         = root.querySelector("#img-x-value");
   ui.imgYRange         = root.querySelector("#img-y-range");
-  ui.imgYValue         = root.querySelector("#img-y-value");
   ui.textInput         = root.querySelector("#text-input");
   ui.textClearBtn      = root.querySelector("#text-clear-btn");
   ui.fontSelect        = root.querySelector("#font-select");
@@ -640,9 +632,7 @@ function renderApp(root) {
   ui.outlineColorInput = root.querySelector("#outline-color-input");
   ui.outlineWidthInput = root.querySelector("#outline-width-input");
   ui.textXRange        = root.querySelector("#text-x-range");
-  ui.textXValue        = root.querySelector("#text-x-value");
   ui.textYRange        = root.querySelector("#text-y-range");
-  ui.textYValue        = root.querySelector("#text-y-value");
   ui.brightnessRange   = root.querySelector("#brightness-range");
   ui.brightnessValue   = root.querySelector("#brightness-value");
   ui.contrastRange     = root.querySelector("#contrast-range");
@@ -700,13 +690,11 @@ function renderApp(root) {
 
   ui.imgXRange.addEventListener("input", () => {
     state.image.x        = Number(ui.imgXRange.value);
-    ui.imgXValue.textContent = state.image.x;
     reprocessImage();
   });
 
   ui.imgYRange.addEventListener("input", () => {
     state.image.y        = Number(ui.imgYRange.value);
-    ui.imgYValue.textContent = state.image.y;
     reprocessImage();
   });
 
@@ -768,13 +756,11 @@ function renderApp(root) {
 
   ui.textXRange.addEventListener("input", () => {
     state.text.x = Number(ui.textXRange.value);
-    ui.textXValue.textContent = state.text.x;
     reprocessImage();
   });
 
   ui.textYRange.addEventListener("input", () => {
     state.text.y = Number(ui.textYRange.value);
-    ui.textYValue.textContent = state.text.y;
     reprocessImage();
   });
 
