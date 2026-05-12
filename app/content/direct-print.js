@@ -13,8 +13,9 @@ const LABEL_W = 320;  // canvas width  (40 mm @ 203 DPI)
 const LABEL_H = 96;   // canvas height (12 mm @ 203 DPI)
 
 // Web Bluetooth writeValueWithoutResponse is capped at 512 bytes by the browser.
-const CHUNK_SIZE     = 512;
-const CHUNK_DELAY_MS = 5;
+const MAX_CHUNK_SIZE         = 512;
+const CHUNK_DELAY_MS         = 5;
+const CHUNK_DELAY_FALLBACK_MS = 10;
 
 // AY/ESC binary command bytes
 const CMD_ENABLE       = [0x10, 0xFF, 0xFE, 0x01];
@@ -151,14 +152,40 @@ async function writeBytes(bytes) {
   }
 }
 
-async function writePrintPayload(payload) {
-  for (let off = 0; off < payload.length; off += CHUNK_SIZE) {
-    const chunk = payload.slice(off, off + CHUNK_SIZE);
-    await writeBytes(chunk);
-    if (off + CHUNK_SIZE < payload.length) {
-      await new Promise((r) => setTimeout(r, CHUNK_DELAY_MS));
+async function writePrintPayloadWithChunkSize(payload, chunkSize, chunkDelayMs) {
+  for (let off = 0; off < payload.length; off += chunkSize) {
+    const chunk = payload.slice(off, off + chunkSize);
+    try {
+      await writeBytes(chunk);
+    } catch {
+      // One retry for transient BLE queue overrun errors.
+      await new Promise((r) => setTimeout(r, chunkDelayMs * 2));
+      await writeBytes(chunk);
+    }
+    if (off + chunkSize < payload.length) {
+      await new Promise((r) => setTimeout(r, chunkDelayMs));
     }
   }
+}
+
+async function writePrintPayload(payload) {
+  const chunkSizes = [MAX_CHUNK_SIZE, 256, 128, 64];
+  let lastErr = null;
+
+  for (let i = 0; i < chunkSizes.length; i++) {
+    const chunkSize = chunkSizes[i];
+    const delayMs = i === 0 ? CHUNK_DELAY_MS : CHUNK_DELAY_FALLBACK_MS;
+    try {
+      setStatus(`Sending print job… (${chunkSize}B chunks)`);
+      await writePrintPayloadWithChunkSize(payload, chunkSize, delayMs);
+      return;
+    } catch (err) {
+      lastErr = err;
+      await new Promise((r) => setTimeout(r, 120));
+    }
+  }
+
+  throw lastErr || new Error("Failed to send print payload.");
 }
 
 async function fetchPrinterInfo() {
