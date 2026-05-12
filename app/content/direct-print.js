@@ -16,7 +16,7 @@ const LABEL_H = 96;   // canvas height (12 mm @ 203 DPI)
 const MAX_CHUNK_SIZE         = 512;
 const CHUNK_DELAY_MS         = 5;
 const CHUNK_DELAY_FALLBACK_MS = 10;
-const CHUNK_SIZE_FALLBACK_DELAY_MS = 120;
+const FALLBACK_RETRY_DELAY_MS = 120;
 
 // AY/ESC binary command bytes
 const CMD_ENABLE       = [0x10, 0xFF, 0xFE, 0x01];
@@ -161,7 +161,11 @@ async function writePrintPayloadWithChunkSize(payload, chunkSize, chunkDelayMs) 
     } catch (_err) {
       // One retry for transient BLE queue overrun errors.
       await new Promise((r) => setTimeout(r, chunkDelayMs * 2));
-      await writeBytes(chunk);
+      try {
+        await writeBytes(chunk);
+      } catch (retryErr) {
+        throw new Error(`Chunk write failed twice at offset ${off} (${chunkSize}B): ${retryErr.message}`);
+      }
     }
     if (off + chunkSize < payload.length) {
       await new Promise((r) => setTimeout(r, chunkDelayMs));
@@ -182,7 +186,7 @@ async function writePrintPayload(payload) {
       return;
     } catch (err) {
       lastErr = err;
-      await new Promise((r) => setTimeout(r, CHUNK_SIZE_FALLBACK_DELAY_MS));
+      await new Promise((r) => setTimeout(r, FALLBACK_RETRY_DELAY_MS));
     }
   }
 
