@@ -1,3 +1,42 @@
+/* Nav */
+
+.app-nav {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  font-size: 0.875rem;
+}
+
+.app-nav a {
+  color: #c9d2e3;
+  text-decoration: none;
+}
+
+.app-nav a:hover {
+  color: #f5f7fb;
+}
+
+.app-nav a.active {
+  color: #90a6ff;
+  font-weight: 600;
+}
+
+.app-nav-sep {
+  color: rgba(255, 255, 255, 0.25);
+}
+
+/* Range input */
+
+.settings-row input[type="range"] {
+  height: auto;
+  padding: 0;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+}
+
 :root {
   color-scheme: dark;
   font-family: Inter, system-ui, sans-serif;
