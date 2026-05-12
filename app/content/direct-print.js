@@ -171,16 +171,17 @@ async function fetchPrinterInfo() {
       // Try the documented 2-byte format [charging_flag, level%] first, then
       // fall back to the echoed-command format (header + [charging_flag, level%]).
       let chargingFlag, battLevel;
-      if (bat[1] <= 100) {
+      const validFlag = (b) => b === 0x00 || b === 0x02;
+      if (bat[1] <= 100 && validFlag(bat[0])) {
         // Documented format: first byte is charging flag, second is level %.
         chargingFlag = bat[0];
         battLevel    = bat[1];
-      } else if (bat.length >= 6 && bat[5] <= 100) {
+      } else if (bat.length >= 6 && bat[5] <= 100 && validFlag(bat[4])) {
         // Echo-prefixed format: 4-byte command echo followed by [flag, level%].
         chargingFlag = bat[4];
         battLevel    = bat[5];
       } else {
-        // Unknown format – clamp whatever we have and show it.
+        // Unknown format — clamp whatever we have and show it.
         chargingFlag = bat[0];
         battLevel    = Math.min(100, bat[1]);
       }
