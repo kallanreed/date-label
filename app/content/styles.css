@@ -29,7 +29,8 @@
 
 /* Range input */
 
-.settings-row input[type="range"] {
+.settings-row input[type="range"],
+.dp-row input[type="range"] {
   height: auto;
   padding: 0;
   border: none;
@@ -42,6 +43,85 @@
 .settings-row input[type="text"] {
   flex: 1;
   min-width: 0;
+}
+
+/* ── Direct-print compact controls ────────────────────────────────────── */
+
+.dp-row {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-bottom: 0.35rem;
+}
+
+.dp-row:last-child {
+  margin-bottom: 0;
+}
+
+/* Reset browser default input styles inside dp-row to avoid 2.5rem height */
+
+.dp-row input:not([type="range"]):not([type="checkbox"]):not([type="color"]),
+.dp-row select {
+  height: 2.1rem;
+  padding: 0 0.5rem;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: #111722;
+  color: inherit;
+}
+
+.dp-label {
+  font-size: 0.82rem;
+  white-space: nowrap;
+  min-width: 3.8rem;
+  color: #c9d2e3;
+}
+
+.dp-val {
+  font-family: "SFMono-Regular", ui-monospace, monospace;
+  font-size: 0.78rem;
+  min-width: 2.8rem;
+  text-align: right;
+  color: #c9d2e3;
+}
+
+.dp-number {
+  width: 3.5rem;
+  text-align: center;
+}
+
+.dp-color {
+  width: 2rem;
+  height: 2rem;
+  padding: 1px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 5px;
+  cursor: pointer;
+  background: none;
+  flex-shrink: 0;
+}
+
+.dp-section {
+  padding-top: 0.6rem;
+  margin-top: 0.6rem;
+  border-top: 1px solid rgba(255, 255, 255, 0.07);
+}
+
+/* Landscape label preview */
+
+.preview-landscape {
+  width: 100%;
+  overflow: auto;
+}
+
+.preview-landscape canvas {
+  display: block;
+  width: 100%;
+  height: auto;
+  image-rendering: pixelated;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 6px;
+  background: white;
 }
 
 :root {

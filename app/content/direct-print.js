@@ -7,21 +7,21 @@ const PRINTER_BLE = {
   notifyUuid:  "0000ff03-0000-1000-8000-00805f9b34fb",
 };
 
-// D12 print area: 12 mm × 40 mm at 203 DPI
-const PRINT_WIDTH  = 96;   // dots across (12 mm)
-const PRINT_HEIGHT = 320;  // dots tall   (40 mm)
+// Label canvas: landscape orientation (40 mm wide × 12 mm tall at 203 DPI).
+// The bitmap sent to the printer is rotated 90° CW → 96 dots wide × 320 dots tall.
+const LABEL_W = 320;  // canvas width  (40 mm @ 203 DPI)
+const LABEL_H = 96;   // canvas height (12 mm @ 203 DPI)
 
-const PREVIEW_SCALE  = 2;    // Display the label canvas 2× for visibility
 const CHUNK_SIZE     = 1024;
 const CHUNK_DELAY_MS = 5;
 
 // AY/ESC binary command bytes
 const CMD_ENABLE       = [0x10, 0xFF, 0xFE, 0x01];
 const CMD_WAKEUP       = new Array(12).fill(0x00);
-const CMD_LOCATION_CTR = [0x1B, 0x61, 0x01];        // center alignment
-const CMD_LINE_DOT     = [0x1B, 0x4A, 0x0A];        // advance 10 dot-lines
-const CMD_POSITION     = [0x1D, 0x0C];              // gap/label detection
-const CMD_STOP         = [0x10, 0xFF, 0xFE, 0x45];  // triggers print
+const CMD_LOCATION_CTR = [0x1B, 0x61, 0x01];
+const CMD_LINE_DOT     = [0x1B, 0x4A, 0x0A];
+const CMD_POSITION     = [0x1D, 0x0C];
+const CMD_STOP         = [0x10, 0xFF, 0xFE, 0x45];
 const CMD_BATTERY      = [0x10, 0xFF, 0x50, 0xF1];
 const CMD_VERSION      = [0x10, 0xFF, 0x20, 0xF1];
 
@@ -29,43 +29,43 @@ const CMD_VERSION      = [0x10, 0xFF, 0x20, 0xF1];
 
 const state = {
   ble: {
-    supported: typeof navigator !== "undefined" && "bluetooth" in navigator,
-    device:    null,
-    writeChar: null,
+    supported:  typeof navigator !== "undefined" && "bluetooth" in navigator,
+    device:     null,
+    writeChar:  null,
     notifyChar: null,
-    connected: false,
+    connected:  false,
   },
   image: {
-    // Full-width-scaled grayscale buffer (width = PRINT_WIDTH, height = fullHeight)
-    rawGray:    null,
-    fullHeight: 0,
-    cropY:      0,    // top edge of the PRINT_HEIGHT-tall crop window
-    // Computed output (updated by reprocessImage)
-    bitmap:   null,   // Uint8Array: packed 1-bit, MSB first
-    width:    0,
-    height:   0,
+    element:  null,    // HTMLImageElement after load
+    naturalW: 0,
+    naturalH: 0,
+    drawW:    0,       // width drawn on label canvas (dots)
+    x:        0,      // top-left position on label canvas (dots)
+    y:        0,
     fileName: "",
   },
-  settings: {
-    density:    3,
-    useDither:  true,
-    invert:     false,
-    brightness: 0,   // -100 to +100
-    contrast:   0,   // -100 to +100
-  },
   text: {
-    content:    "",
-    fontSize:   14,   // canvas pixels (displayed at PREVIEW_SCALE×)
-    fontFamily: "sans-serif",
-    x: 2,
-    y: 0,   // top of text in canvas-pixel coordinates (textBaseline = "top")
+    content:      "",
+    fontFamily:   "Impact",
+    fontSize:     48,
+    fillColor:    "#ffffff",
+    outlineColor: "#000000",
+    outlineWidth: 8,
+    x:            0,
+    y:            0,
   },
-  drag: {
-    active:      false,
-    startMouseX: 0,
-    startMouseY: 0,
-    startTextX:  0,
-    startTextY:  0,
+  settings: {
+    dithering:  "atkinson",
+    bgColor:    "#ffffff",
+    invert:     false,
+    brightness: 0,
+    contrast:   0,
+    density:    3,
+  },
+  print: {
+    bitmap:      null,
+    printWidth:  LABEL_H,   // after 90° CW rotation: 96
+    printHeight: LABEL_W,   // after 90° CW rotation: 320
   },
   status: {
     printing: false,
@@ -92,54 +92,38 @@ function handleDisconnect() {
 }
 
 async function connectPrinter() {
-  if (!state.ble.supported) {
-    throw new Error("Web Bluetooth is not available in this browser.");
-  }
-
+  if (!state.ble.supported) throw new Error("Web Bluetooth is not available.");
   const device = await navigator.bluetooth.requestDevice({
     filters: [{ services: [PRINTER_BLE.serviceUuid] }],
   });
-
   device.addEventListener("gattserverdisconnected", handleDisconnect);
-
   const server     = await device.gatt.connect();
   const service    = await server.getPrimaryService(PRINTER_BLE.serviceUuid);
   const writeChar  = await service.getCharacteristic(PRINTER_BLE.writeUuid);
   const notifyChar = await service.getCharacteristic(PRINTER_BLE.notifyUuid);
-
   await notifyChar.startNotifications();
-
   state.ble.device     = device;
   state.ble.writeChar  = writeChar;
   state.ble.notifyChar = notifyChar;
   state.ble.connected  = true;
-
   updateUI();
   setStatus(`Connected to ${device.name || "printer"}.`);
   fetchPrinterInfo();
 }
 
 async function disconnectPrinter() {
-  if (state.ble.device?.gatt?.connected) {
-    state.ble.device.gatt.disconnect();
-  }
+  if (state.ble.device?.gatt?.connected) state.ble.device.gatt.disconnect();
   handleDisconnect();
 }
 
-// Send a query command and collect notifications for `responseTimeoutMs` milliseconds.
 async function queryPrinter(cmdBytes, responseTimeoutMs = 600) {
   if (!state.ble.writeChar || !state.ble.notifyChar) return null;
-
-  const chunks = [];
-  const handler = (event) => {
-    chunks.push(new Uint8Array(event.target.value.buffer));
-  };
-
+  const chunks  = [];
+  const handler = (e) => chunks.push(new Uint8Array(e.target.value.buffer));
   state.ble.notifyChar.addEventListener("characteristicvaluechanged", handler);
   await writeBytes(cmdBytes);
   await new Promise((r) => setTimeout(r, responseTimeoutMs));
   state.ble.notifyChar.removeEventListener("characteristicvaluechanged", handler);
-
   const total  = chunks.reduce((s, c) => s + c.length, 0);
   const result = new Uint8Array(total);
   let off = 0;
@@ -157,7 +141,6 @@ async function writeBytes(bytes) {
   }
 }
 
-// Send the print payload in 1024-byte chunks with 5 ms inter-chunk delay.
 async function writePrintPayload(payload) {
   for (let off = 0; off < payload.length; off += CHUNK_SIZE) {
     const chunk = payload.slice(off, off + CHUNK_SIZE);
@@ -170,30 +153,21 @@ async function writePrintPayload(payload) {
 
 async function fetchPrinterInfo() {
   try {
-    const bat = await queryPrinter(CMD_BATTERY);
-    const ver = await queryPrinter(CMD_VERSION);
-
+    const bat   = await queryPrinter(CMD_BATTERY);
+    const ver   = await queryPrinter(CMD_VERSION);
     const parts = [];
-
     if (bat && bat.length >= 2) {
-      const charging = bat[0] === 0x02;
-      parts.push(`Battery: ${bat[1]}%${charging ? " ⚡" : ""}`);
+      parts.push(`Battery: ${bat[1]}%${bat[0] === 0x02 ? " ⚡" : ""}`);
     }
-
     if (ver && ver.length > 0) {
       const text = new TextDecoder().decode(ver).replace(/\0/g, "").trim();
       if (text) parts.push(`FW: ${text}`);
     }
-
-    if (ui.printerInfo && parts.length) {
-      ui.printerInfo.textContent = parts.join(" · ");
-    }
-  } catch {
-    // Info fetch is best-effort; ignore errors.
-  }
+    if (ui.printerInfo && parts.length) ui.printerInfo.textContent = parts.join(" · ");
+  } catch { /* best-effort */ }
 }
 
-// ── Image processing ──────────────────────────────────────────────────────
+// ── Image loading ─────────────────────────────────────────────────────────
 
 async function loadImage(file) {
   const img = new Image();
@@ -202,56 +176,47 @@ async function loadImage(file) {
   await img.decode();
   URL.revokeObjectURL(url);
 
-  // Scale image so its width is exactly PRINT_WIDTH (96 dots), upscaling allowed.
-  // The user will crop vertically if the image is taller than PRINT_HEIGHT.
-  const scale = PRINT_WIDTH / img.naturalWidth;
-  const w     = PRINT_WIDTH;
-  const h     = Math.max(1, Math.round(img.naturalHeight * scale));
+  state.image.element  = img;
+  state.image.naturalW = img.naturalWidth;
+  state.image.naturalH = img.naturalHeight;
+  state.image.fileName = file.name;
 
-  // Draw onto a temporary canvas with a white background.
-  const tempCanvas = document.createElement("canvas");
-  tempCanvas.width  = w;
-  tempCanvas.height = h;
-  const ctx = tempCanvas.getContext("2d");
-  ctx.fillStyle = "white";
-  ctx.fillRect(0, 0, w, h);
-  ctx.drawImage(img, 0, 0, w, h);
+  // Default: fit image width to label width; center vertically if it fits.
+  state.image.drawW = LABEL_W;
+  const drawH = (LABEL_W / img.naturalWidth) * img.naturalHeight;
+  state.image.x = 0;
+  state.image.y = drawH <= LABEL_H ? Math.round((LABEL_H - drawH) / 2) : 0;
 
-  // Convert RGBA pixels to grayscale using ITU-R BT.601 luma coefficients.
-  const px   = ctx.getImageData(0, 0, w, h).data;
-  const gray = new Float32Array(w * h);
-  for (let i = 0; i < w * h; i++) {
-    gray[i] = 0.299 * px[i * 4] + 0.587 * px[i * 4 + 1] + 0.114 * px[i * 4 + 2];
-  }
-
-  state.image.rawGray    = gray;
-  state.image.fullHeight = h;
-  state.image.cropY      = 0;
-  state.image.fileName   = file.name;
-
-  syncCropSlider();
+  syncImageSliders();
   reprocessImage();
 }
 
-// Apply brightness and contrast adjustments to a grayscale buffer.
-// brightness: -100 to +100 (shifts pixel values by up to ±255)
-// contrast:   -100 to +100 (standard photoshop-style midpoint scaling)
+function syncImageSliders() {
+  if (!ui.imgWRange) return;
+  ui.imgWRange.value       = state.image.drawW;
+  ui.imgWValue.textContent = `${state.image.drawW}px`;
+  ui.imgXRange.value       = state.image.x;
+  ui.imgXValue.textContent = state.image.x;
+  ui.imgYRange.value       = state.image.y;
+  ui.imgYValue.textContent = state.image.y;
+}
+
+// ── Image processing ──────────────────────────────────────────────────────
+
+// Apply Photoshop-style brightness (+/- shift) and contrast (midpoint scaling).
 function applyBrightnessContrast(gray, brightness, contrast) {
   const brightnessShift = brightness * 2.55;
-  // Map contrast [-100, 100] → [-255, 255] and apply the standard
-  // Photoshop-style formula: factor = (259*(c+255)) / (255*(259-c))
+  // Photoshop contrast formula: factor = (259*(c+255)) / (255*(259-c))
   const contrastScaled = contrast * 2.55;
   const factor = (259 * (contrastScaled + 255)) / (255 * (259 - contrastScaled));
-
   return new Float32Array(gray.map((v) => {
-    let val = factor * ((v + brightnessShift) - 128) + 128;
+    const val = factor * ((v + brightnessShift) - 128) + 128;
     return Math.max(0, Math.min(255, val));
   }));
 }
 
-// Atkinson dithering — distributes 6/8 of the quantization error to 6 neighbors.
-// Each neighbor receives 1/8 of the error; the remaining 1/4 is discarded.
-// This produces crisper halftones with cleaner highlights than Floyd-Steinberg.
+// Atkinson dithering — distributes 6/8 of quantization error to 6 neighbors (1/8 each).
+// The remaining 1/4 is discarded, giving crisper highlights than Floyd-Steinberg.
 //
 // Error kernel (relative to current pixel X):
 //   . X 1 1
@@ -259,174 +224,172 @@ function applyBrightnessContrast(gray, brightness, contrast) {
 //   . 1 . .
 function atkinsonDither(gray, width, height) {
   const buf = Float32Array.from(gray);
-
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
       const idx  = y * width + x;
       const old  = Math.max(0, Math.min(255, buf[idx]));
       const next = old < 128 ? 0 : 255;
       buf[idx]   = next;
-      const err  = (old - next) / 8;  // 1/8 of error to each of 6 neighbors
+      const err  = (old - next) / 8;
 
-      if (x + 1 < width)           buf[idx + 1]             += err;
-      if (x + 2 < width)           buf[idx + 2]             += err;
+      if (x + 1 < width)         buf[idx + 1]           += err;
+      if (x + 2 < width)         buf[idx + 2]           += err;
       if (y + 1 < height) {
-        if (x > 0)                 buf[idx + width - 1]     += err;
-                                   buf[idx + width]         += err;
-        if (x + 1 < width)         buf[idx + width + 1]     += err;
+        if (x > 0)               buf[idx + width - 1]   += err;
+                                 buf[idx + width]        += err;
+        if (x + 1 < width)       buf[idx + width + 1]   += err;
       }
-      if (y + 2 < height)          buf[idx + 2 * width]     += err;
+      if (y + 2 < height)        buf[idx + 2 * width]   += err;
     }
   }
-
   return new Uint8Array(buf.map((v) => (v < 128 ? 0 : 255)));
 }
 
-// Simple midpoint threshold — no error diffusion.
 function applyThreshold(gray) {
   return new Uint8Array(gray.map((v) => (v < 128 ? 0 : 255)));
 }
 
-// Composite text from state.text onto a grayscale Float32Array (in-place).
-// Black text is burned directly into the buffer before dithering.
-function compositeText(grayBuf, width, height) {
-  const { content, fontSize, fontFamily, x, y } = state.text;
-  if (!content) return;
-
-  const tmp = document.createElement("canvas");
-  tmp.width  = width;
-  tmp.height = height;
-  const ctx = tmp.getContext("2d");
-
-  ctx.clearRect(0, 0, width, height);
-  ctx.fillStyle    = "black";
-  ctx.font         = `bold ${fontSize}px ${fontFamily}`;
-  ctx.textBaseline = "top";
-  ctx.fillText(content, x, y);
-
-  const px = ctx.getImageData(0, 0, width, height).data;
-
-  // Blend: where the text alpha > 0, darken the grayscale pixel proportionally.
-  for (let i = 0; i < width * height; i++) {
-    const alpha = px[i * 4 + 3] / 255;
-    if (alpha > 0) {
-      grayBuf[i] = Math.max(0, grayBuf[i] * (1 - alpha));
-    }
-  }
-}
-
-// Pack a 0/255 pixel buffer into 1-bit-per-pixel (MSB = leftmost pixel).
+// Pack 0/255 pixel array into 1-bit-per-pixel (MSB = leftmost pixel).
 function packBitmap(pixels, width, height) {
-  const bytesPerRow = Math.ceil(width / 8);
-  const bitmap      = new Uint8Array(bytesPerRow * height);
-
+  const bpr    = Math.ceil(width / 8);
+  const bitmap = new Uint8Array(bpr * height);
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
       if (pixels[y * width + x] === 0) {
-        bitmap[y * bytesPerRow + Math.floor(x / 8)] |= 1 << (7 - (x % 8));
+        bitmap[y * bpr + Math.floor(x / 8)] |= 1 << (7 - (x % 8));
       }
     }
   }
-
   return bitmap;
 }
 
-// Update the crop slider range to match the current full-height image.
-function syncCropSlider() {
-  if (!ui.cropRow || !ui.cropSlider) return;
-  const maxCrop = Math.max(0, state.image.fullHeight - PRINT_HEIGHT);
-  ui.cropRow.hidden   = maxCrop === 0;
-  ui.cropSlider.max   = maxCrop;
-  ui.cropSlider.value = state.image.cropY;
-  if (ui.cropValue) ui.cropValue.textContent = state.image.cropY;
+// Rotate a 0/255 pixel array 90° clockwise.
+// Input: width × height → Output: height wide × width tall.
+//
+// 90° CW rotation: output pixel (ox, oy) comes from input pixel (oy, height−1−ox)
+// where ox ∈ [0, height−1] and oy ∈ [0, width−1].
+function rotate90CW(pixels, width, height) {
+  const out = new Uint8Array(width * height);
+  for (let oy = 0; oy < width; oy++) {
+    for (let ox = 0; ox < height; ox++) {
+      out[oy * height + ox] = pixels[(height - 1 - ox) * width + oy];
+    }
+  }
+  return out;  // output dimensions: height wide × width tall
 }
 
-// Full image pipeline: crop → brightness/contrast → invert → text → dither → preview.
+// Composite the label onto an off-screen LABEL_W × LABEL_H canvas.
+function compositeLabel() {
+  const canvas  = document.createElement("canvas");
+  canvas.width  = LABEL_W;
+  canvas.height = LABEL_H;
+  const ctx = canvas.getContext("2d");
+
+  // Background
+  ctx.fillStyle = state.settings.bgColor;
+  ctx.fillRect(0, 0, LABEL_W, LABEL_H);
+
+  // Image
+  if (state.image.element) {
+    const drawH = (state.image.drawW / state.image.naturalW) * state.image.naturalH;
+    ctx.drawImage(
+      state.image.element,
+      Math.round(state.image.x),
+      Math.round(state.image.y),
+      Math.round(state.image.drawW),
+      Math.round(drawH),
+    );
+  }
+
+  // Meme-style outlined text
+  if (state.text.content) {
+    ctx.font         = `bold ${state.text.fontSize}px "${state.text.fontFamily}"`;
+    ctx.textBaseline = "top";
+    ctx.lineJoin     = "round";
+
+    if (state.text.outlineWidth > 0) {
+      ctx.strokeStyle = state.text.outlineColor;
+      ctx.lineWidth   = state.text.outlineWidth * 2;  // stroke is centered; half goes outside
+      ctx.strokeText(state.text.content, state.text.x, state.text.y);
+    }
+
+    ctx.fillStyle = state.text.fillColor;
+    ctx.fillText(state.text.content, state.text.x, state.text.y);
+  }
+
+  return canvas;
+}
+
+// Full pipeline: composite → grayscale → brightness/contrast → invert → dither
+//               → rotate 90° CW → pack bitmap → update preview.
 function reprocessImage() {
-  const { rawGray, fullHeight, cropY, fileName } = state.image;
-  if (!rawGray) return;
+  const label = compositeLabel();
+  const ctx   = label.getContext("2d");
+  const px    = ctx.getImageData(0, 0, LABEL_W, LABEL_H).data;
 
-  // 1. Crop: extract the PRINT_WIDTH × printH window starting at cropY.
-  const printH  = Math.min(PRINT_HEIGHT, fullHeight - cropY);
-  const cropped = new Float32Array(PRINT_WIDTH * printH);
-  for (let row = 0; row < printH; row++) {
-    const srcStart = (cropY + row) * PRINT_WIDTH;
-    cropped.set(rawGray.subarray(srcStart, srcStart + PRINT_WIDTH), row * PRINT_WIDTH);
+  // Convert RGBA to grayscale (ITU-R BT.601 luma coefficients).
+  let gray = new Float32Array(LABEL_W * LABEL_H);
+  for (let i = 0; i < LABEL_W * LABEL_H; i++) {
+    gray[i] = 0.299 * px[i * 4] + 0.587 * px[i * 4 + 1] + 0.114 * px[i * 4 + 2];
   }
 
-  // 2. Brightness / contrast.
-  let adjusted = applyBrightnessContrast(
-    cropped, state.settings.brightness, state.settings.contrast
-  );
+  gray = applyBrightnessContrast(gray, state.settings.brightness, state.settings.contrast);
 
-  // 3. Invert.
   if (state.settings.invert) {
-    for (let i = 0; i < adjusted.length; i++) adjusted[i] = 255 - adjusted[i];
+    for (let i = 0; i < gray.length; i++) gray[i] = 255 - gray[i];
   }
 
-  // 4. Text overlay (burns text into grayscale before dithering).
-  compositeText(adjusted, PRINT_WIDTH, printH);
+  const dithered = state.settings.dithering === "atkinson"
+    ? atkinsonDither(gray, LABEL_W, LABEL_H)
+    : applyThreshold(gray);
 
-  // 5. Dither or threshold.
-  const dithered = state.settings.useDither
-    ? atkinsonDither(adjusted, PRINT_WIDTH, printH)
-    : applyThreshold(adjusted);
+  drawPreview(dithered);
 
-  // 6. Store output.
-  state.image.bitmap = packBitmap(dithered, PRINT_WIDTH, printH);
-  state.image.width  = PRINT_WIDTH;
-  state.image.height = printH;
+  // Rotate 90° CW for the printer: output is LABEL_H (96) wide × LABEL_W (320) tall.
+  const rotated = rotate90CW(dithered, LABEL_W, LABEL_H);
+  state.print.bitmap      = packBitmap(rotated, LABEL_H, LABEL_W);
+  state.print.printWidth  = LABEL_H;  // 96
+  state.print.printHeight = LABEL_W;  // 320
 
-  drawPreview(dithered, PRINT_WIDTH, printH, fileName);
   updateUI();
 }
 
-function drawPreview(pixels, width, height, fileName) {
+function drawPreview(dithered) {
   if (!ui.previewCanvas) return;
-
   const canvas  = ui.previewCanvas;
-  canvas.width  = width;
-  canvas.height = height;
-
+  canvas.width  = LABEL_W;
+  canvas.height = LABEL_H;
   const ctx     = canvas.getContext("2d");
-  const imgData = ctx.createImageData(width, height);
-
-  for (let i = 0; i < width * height; i++) {
-    const v = pixels[i];
+  const imgData = ctx.createImageData(LABEL_W, LABEL_H);
+  for (let i = 0; i < LABEL_W * LABEL_H; i++) {
+    const v = dithered[i];
     imgData.data[i * 4]     = v;
     imgData.data[i * 4 + 1] = v;
     imgData.data[i * 4 + 2] = v;
     imgData.data[i * 4 + 3] = 255;
   }
-
   ctx.putImageData(imgData, 0, 0);
 
-  canvas.style.width  = (width  * PREVIEW_SCALE) + "px";
-  canvas.style.height = (height * PREVIEW_SCALE) + "px";
-
-  const bytes = Math.ceil(width / 8) * height;
+  const bytes = Math.ceil(LABEL_H / 8) * LABEL_W;
   if (ui.previewStatus) {
-    const label = fileName ? ` · ${fileName}` : "";
-    ui.previewStatus.textContent = `${width}×${height} px · ${bytes} bytes${label}`;
+    ui.previewStatus.textContent =
+      `${LABEL_W}\u00d7${LABEL_H} px \u2192 printed as ${LABEL_H}\u00d7${LABEL_W} \xb7 ${bytes} bytes`;
   }
 }
 
 // ── Print payload ─────────────────────────────────────────────────────────
 
-// Build the full AY/ESC print payload using the uncompressed GS v 0 image command.
-// Sequence: ENABLE → WAKEUP → LOCATION → DENSITY → PAPER_TYPE → IMAGE →
-//           LINE_DOT → POSITION → STOP_JOB
 function buildPrintPayload(bitmap, width, height, density) {
-  const clampedDensity = Math.max(1, Math.min(15, Math.round(density)));
-  const bytesPerRow    = Math.ceil(width / 8);
+  const clamped     = Math.max(1, Math.min(15, Math.round(density)));
+  const bytesPerRow = Math.ceil(width / 8);
 
   const parts = [
     new Uint8Array(CMD_ENABLE),
     new Uint8Array(CMD_WAKEUP),
     new Uint8Array(CMD_LOCATION_CTR),
-    new Uint8Array([0x10, 0xFF, 0x10, 0x00, clampedDensity]),  // density
-    new Uint8Array([0x10, 0xFF, 0x10, 0x03, 0x00]),             // paper: gap (0)
-    // GS v 0: uncompressed image — dimensions are little-endian
+    new Uint8Array([0x10, 0xFF, 0x10, 0x00, clamped]),
+    new Uint8Array([0x10, 0xFF, 0x10, 0x03, 0x00]),
+    // GS v 0: uncompressed image; dimensions are little-endian
     new Uint8Array([
       0x1D, 0x76, 0x30, 0x00,
       bytesPerRow & 0xFF, (bytesPerRow >> 8) & 0xFF,
@@ -441,10 +404,7 @@ function buildPrintPayload(bitmap, width, height, density) {
   const total   = parts.reduce((s, p) => s + p.length, 0);
   const payload = new Uint8Array(total);
   let offset    = 0;
-  for (const part of parts) {
-    payload.set(part, offset);
-    offset += part.length;
-  }
+  for (const p of parts) { payload.set(p, offset); offset += p.length; }
   return payload;
 }
 
@@ -452,25 +412,20 @@ function buildPrintPayload(bitmap, width, height, density) {
 
 function updateUI() {
   const connected = state.ble.connected;
-  const hasBitmap = !!state.image.bitmap;
+  const hasBitmap = !!state.print.bitmap;
 
   if (ui.connectBtn) {
-    ui.connectBtn.textContent = connected ? "Disconnect" : "Connect Printer";
+    ui.connectBtn.textContent = connected ? "Disconnect" : "Connect";
     ui.connectBtn.className   = connected ? "secondary"  : "primary";
     ui.connectBtn.disabled    = !state.ble.supported;
   }
 
   if (!state.ble.supported && ui.connectStatus) {
-    ui.connectStatus.textContent = "Web Bluetooth is not available in this browser.";
+    ui.connectStatus.textContent = "Web Bluetooth not available.";
   }
 
   if (ui.printBtn) {
     ui.printBtn.disabled = !connected || !hasBitmap || state.status.printing;
-  }
-
-  // Show "move" cursor on the preview canvas only when there is text to drag.
-  if (ui.previewCanvas) {
-    ui.previewCanvas.style.cursor = state.text.content ? "move" : "default";
   }
 }
 
@@ -478,123 +433,156 @@ function renderApp(root) {
   root.innerHTML = `
     <main class="layout">
 
+      <!-- Printer status bar -->
       <section class="card compact-card">
-        <div class="card-header">
-          <h2>Printer</h2>
-        </div>
-        <div class="button-row">
-          <button id="connect-btn" class="primary" type="button">Connect Printer</button>
-        </div>
-        <p id="connect-status" class="status">Not connected.</p>
-        <p id="printer-info" class="meta"></p>
-      </section>
-
-      <section class="card">
-        <div class="card-header">
-          <h2>Image</h2>
-          <p class="section-copy">
-            Image is scaled to the full 96-dot (12&thinsp;mm) print width.
-            If taller than the label, use the crop slider in the preview to choose which
-            part to print.
-          </p>
-        </div>
-        <div class="button-row">
-          <button id="upload-btn" type="button">Upload Image</button>
-        </div>
-        <input id="file-input" type="file" accept="image/*" hidden />
-
-        <div class="settings-row" style="margin-top: 0.75rem;">
-          <label for="brightness-range">Brightness</label>
-          <input id="brightness-range" type="range" min="-100" max="100" value="0" style="flex: 1;" />
-          <code id="brightness-value">0</code>
-        </div>
-
-        <div class="settings-row">
-          <label for="contrast-range">Contrast</label>
-          <input id="contrast-range" type="range" min="-100" max="100" value="0" style="flex: 1;" />
-          <code id="contrast-value">0</code>
-        </div>
-
-        <div class="settings-row">
-          <label for="density-range">Density</label>
-          <input id="density-range" type="range" min="1" max="15" value="3" style="flex: 1;" />
-          <code id="density-value">3</code>
-        </div>
-
-        <label class="settings-row checkbox-row">
-          <input id="dither-input" type="checkbox" checked />
-          <span>Atkinson dithering</span>
-        </label>
-
-        <label class="settings-row checkbox-row">
-          <input id="invert-input" type="checkbox" />
-          <span>Invert (swap black &amp; white)</span>
-        </label>
-      </section>
-
-      <section class="card">
-        <div class="card-header">
-          <h2>Text</h2>
-          <p class="section-copy">
-            Drag the preview canvas to reposition the text on the label.
-          </p>
-        </div>
-        <div class="settings-row">
-          <input id="text-input" type="text" placeholder="Label text…" />
-        </div>
-        <div class="settings-row" style="margin-top: 0.5rem;">
-          <label for="font-size-range">Size</label>
-          <input id="font-size-range" type="range" min="4" max="32" value="14" style="flex: 1;" />
-          <code id="font-size-value">14</code>
+        <div class="dp-row">
+          <button id="connect-btn" class="primary" type="button">Connect</button>
+          <span id="connect-status" class="status" style="flex:1;margin:0;">Not connected.</span>
+          <span id="printer-info" class="meta" style="margin:0;"></span>
         </div>
       </section>
 
+      <!-- Controls -->
       <section class="card">
-        <div class="card-header">
-          <h2>Preview</h2>
+
+        <!-- Dithering + background + invert -->
+        <div class="dp-row">
+          <select id="dither-select" style="flex:1;">
+            <option value="atkinson">Atkinson</option>
+            <option value="threshold">Threshold</option>
+          </select>
+          <label class="dp-row" style="margin:0;gap:0.3rem;" title="Background colour">
+            BG<input id="bg-color" type="color" value="#ffffff" class="dp-color" />
+          </label>
+          <label class="dp-row" style="margin:0;gap:0.3rem;">
+            <input id="invert-input" type="checkbox" />Invert
+          </label>
         </div>
-        <div class="preview-row">
-          <div class="preview-shell">
-            <canvas id="preview-canvas" class="preview-canvas"></canvas>
+
+        <!-- Image -->
+        <div class="dp-section">
+          <div class="dp-row">
+            <button id="upload-btn" type="button" style="white-space:nowrap;">Image</button>
+            <input id="file-input" type="file" accept="image/*" hidden />
+            <button id="clear-img-btn" type="button" class="secondary" title="Remove image">&#x2715;</button>
+            <span id="img-name" class="meta" style="flex:1;margin:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"></span>
           </div>
-          <div class="preview-actions">
-            <button id="print-btn" type="button" disabled>Print</button>
+          <div class="dp-row">
+            <span class="dp-label">W</span>
+            <input id="img-w-range" type="range" min="8" max="640" value="320" style="flex:1;" />
+            <span id="img-w-value" class="dp-val">320px</span>
+          </div>
+          <div class="dp-row">
+            <span class="dp-label">X</span>
+            <input id="img-x-range" type="range" min="-320" max="320" value="0" style="flex:1;" />
+            <span id="img-x-value" class="dp-val">0</span>
+            <span class="dp-label">Y</span>
+            <input id="img-y-range" type="range" min="-96" max="96" value="0" style="flex:1;" />
+            <span id="img-y-value" class="dp-val">0</span>
           </div>
         </div>
-        <div id="crop-row" class="settings-row" style="margin-top: 0.75rem;" hidden>
-          <label for="crop-slider">Crop position</label>
-          <input id="crop-slider" type="range" min="0" max="0" value="0" style="flex: 1;" />
-          <code id="crop-value">0</code>
+
+        <!-- Text -->
+        <div class="dp-section">
+          <div class="dp-row">
+            <input id="text-input" type="text" placeholder="Label text\u2026" style="flex:1;min-width:0;" />
+            <button id="text-clear-btn" type="button" class="secondary" title="Clear text">&#x2715;</button>
+          </div>
+          <div class="dp-row" style="flex-wrap:wrap;">
+            <select id="font-select" style="flex:2;min-width:8rem;">
+              <option value="Impact">Impact</option>
+              <option value="Arial Black">Arial Black</option>
+              <option value="Arial">Arial</option>
+              <option value="Helvetica">Helvetica</option>
+              <option value="Georgia">Georgia</option>
+              <option value="Courier New">Courier New</option>
+            </select>
+            <input id="font-size-input" type="number" min="4" max="256" value="48" class="dp-number" title="Font size" />
+            <input id="fill-color-input" type="color" value="#ffffff" class="dp-color" title="Text fill" />
+            <input id="outline-color-input" type="color" value="#000000" class="dp-color" title="Outline colour" />
+            <input id="outline-width-input" type="number" min="0" max="30" value="8" class="dp-number" title="Outline width" />
+          </div>
+          <div class="dp-row">
+            <span class="dp-label">X</span>
+            <input id="text-x-range" type="range" min="-320" max="320" value="0" style="flex:1;" />
+            <span id="text-x-value" class="dp-val">0</span>
+            <span class="dp-label">Y</span>
+            <input id="text-y-range" type="range" min="-96" max="96" value="0" style="flex:1;" />
+            <span id="text-y-value" class="dp-val">0</span>
+          </div>
         </div>
-        <p id="preview-status" class="status">No image loaded.</p>
+
+        <!-- Brightness / Contrast -->
+        <div class="dp-section">
+          <div class="dp-row">
+            <span class="dp-label">Brightness</span>
+            <input id="brightness-range" type="range" min="-100" max="100" value="0" style="flex:1;" />
+            <span id="brightness-value" class="dp-val">0</span>
+          </div>
+          <div class="dp-row">
+            <span class="dp-label">Contrast</span>
+            <input id="contrast-range" type="range" min="-100" max="100" value="0" style="flex:1;" />
+            <span id="contrast-value" class="dp-val">0</span>
+          </div>
+        </div>
+
+      </section>
+
+      <!-- Preview + Print -->
+      <section class="card">
+        <div class="preview-landscape">
+          <canvas id="preview-canvas"></canvas>
+        </div>
+        <p id="preview-status" class="status">No content.</p>
+        <div class="dp-row" style="margin-top:0.6rem;flex-wrap:wrap;">
+          <span class="dp-label">Density</span>
+          <input id="density-range" type="range" min="1" max="15" value="3" style="flex:1;min-width:6rem;" />
+          <span id="density-value" class="dp-val">3</span>
+          <button id="print-btn" type="button" disabled style="margin-left:auto;">Print</button>
+        </div>
       </section>
 
     </main>
   `;
 
-  // Cache element references.
-  ui.connectBtn      = root.querySelector("#connect-btn");
-  ui.connectStatus   = root.querySelector("#connect-status");
-  ui.printerInfo     = root.querySelector("#printer-info");
-  ui.uploadBtn       = root.querySelector("#upload-btn");
-  ui.fileInput       = root.querySelector("#file-input");
-  ui.brightnessRange = root.querySelector("#brightness-range");
-  ui.brightnessValue = root.querySelector("#brightness-value");
-  ui.contrastRange   = root.querySelector("#contrast-range");
-  ui.contrastValue   = root.querySelector("#contrast-value");
-  ui.densityRange    = root.querySelector("#density-range");
-  ui.densityValue    = root.querySelector("#density-value");
-  ui.ditherInput     = root.querySelector("#dither-input");
-  ui.invertInput     = root.querySelector("#invert-input");
-  ui.textInput       = root.querySelector("#text-input");
-  ui.fontSizeRange   = root.querySelector("#font-size-range");
-  ui.fontSizeValue   = root.querySelector("#font-size-value");
-  ui.previewCanvas   = root.querySelector("#preview-canvas");
-  ui.cropRow         = root.querySelector("#crop-row");
-  ui.cropSlider      = root.querySelector("#crop-slider");
-  ui.cropValue       = root.querySelector("#crop-value");
-  ui.previewStatus   = root.querySelector("#preview-status");
-  ui.printBtn        = root.querySelector("#print-btn");
+  // ── Cache element references ──────────────────────────────────────────
+
+  ui.connectBtn        = root.querySelector("#connect-btn");
+  ui.connectStatus     = root.querySelector("#connect-status");
+  ui.printerInfo       = root.querySelector("#printer-info");
+  ui.uploadBtn         = root.querySelector("#upload-btn");
+  ui.fileInput         = root.querySelector("#file-input");
+  ui.clearImgBtn       = root.querySelector("#clear-img-btn");
+  ui.imgName           = root.querySelector("#img-name");
+  ui.ditherSelect      = root.querySelector("#dither-select");
+  ui.bgColor           = root.querySelector("#bg-color");
+  ui.invertInput       = root.querySelector("#invert-input");
+  ui.imgWRange         = root.querySelector("#img-w-range");
+  ui.imgWValue         = root.querySelector("#img-w-value");
+  ui.imgXRange         = root.querySelector("#img-x-range");
+  ui.imgXValue         = root.querySelector("#img-x-value");
+  ui.imgYRange         = root.querySelector("#img-y-range");
+  ui.imgYValue         = root.querySelector("#img-y-value");
+  ui.textInput         = root.querySelector("#text-input");
+  ui.textClearBtn      = root.querySelector("#text-clear-btn");
+  ui.fontSelect        = root.querySelector("#font-select");
+  ui.fontSizeInput     = root.querySelector("#font-size-input");
+  ui.fillColorInput    = root.querySelector("#fill-color-input");
+  ui.outlineColorInput = root.querySelector("#outline-color-input");
+  ui.outlineWidthInput = root.querySelector("#outline-width-input");
+  ui.textXRange        = root.querySelector("#text-x-range");
+  ui.textXValue        = root.querySelector("#text-x-value");
+  ui.textYRange        = root.querySelector("#text-y-range");
+  ui.textYValue        = root.querySelector("#text-y-value");
+  ui.brightnessRange   = root.querySelector("#brightness-range");
+  ui.brightnessValue   = root.querySelector("#brightness-value");
+  ui.contrastRange     = root.querySelector("#contrast-range");
+  ui.contrastValue     = root.querySelector("#contrast-value");
+  ui.previewCanvas     = root.querySelector("#preview-canvas");
+  ui.previewStatus     = root.querySelector("#preview-status");
+  ui.densityRange      = root.querySelector("#density-range");
+  ui.densityValue      = root.querySelector("#density-value");
+  ui.printBtn          = root.querySelector("#print-btn");
 
   // ── Printer ──────────────────────────────────────────────────────────
 
@@ -602,12 +590,8 @@ function renderApp(root) {
     if (state.ble.connected) {
       await disconnectPrinter();
     } else {
-      setStatus("Connecting…");
-      try {
-        await connectPrinter();
-      } catch (err) {
-        setStatus(err.message);
-      }
+      setStatus("Connecting\u2026");
+      try { await connectPrinter(); } catch (err) { setStatus(err.message); }
     }
     updateUI();
   });
@@ -619,19 +603,113 @@ function renderApp(root) {
   ui.fileInput.addEventListener("change", async (e) => {
     const file = e.target.files[0];
     if (!file) return;
-    if (ui.previewStatus) ui.previewStatus.textContent = "Loading…";
+    if (ui.previewStatus) ui.previewStatus.textContent = "Loading\u2026";
     try {
       await loadImage(file);
+      if (ui.imgName) ui.imgName.textContent = file.name;
     } catch (err) {
-      const isDecodeError = err instanceof DOMException || err.message.includes("decode");
-      const msg = isDecodeError
-        ? "Could not decode image. Try a different PNG or JPEG file."
-        : `Error loading image: ${err.message}`;
+      const msg = (err instanceof DOMException || err.message.includes("decode"))
+        ? "Could not decode image. Try a different file."
+        : `Error: ${err.message}`;
       if (ui.previewStatus) ui.previewStatus.textContent = msg;
     }
-    // Reset so the same file can be re-selected after changing settings.
     ui.fileInput.value = "";
   });
+
+  ui.clearImgBtn.addEventListener("click", () => {
+    state.image.element  = null;
+    state.image.fileName = "";
+    if (ui.imgName) ui.imgName.textContent = "";
+    reprocessImage();
+  });
+
+  ui.imgWRange.addEventListener("input", () => {
+    state.image.drawW    = Number(ui.imgWRange.value);
+    ui.imgWValue.textContent = `${state.image.drawW}px`;
+    reprocessImage();
+  });
+
+  ui.imgXRange.addEventListener("input", () => {
+    state.image.x        = Number(ui.imgXRange.value);
+    ui.imgXValue.textContent = state.image.x;
+    reprocessImage();
+  });
+
+  ui.imgYRange.addEventListener("input", () => {
+    state.image.y        = Number(ui.imgYRange.value);
+    ui.imgYValue.textContent = state.image.y;
+    reprocessImage();
+  });
+
+  // ── Dithering / global ────────────────────────────────────────────────
+
+  ui.ditherSelect.addEventListener("change", () => {
+    state.settings.dithering = ui.ditherSelect.value;
+    reprocessImage();
+  });
+
+  ui.bgColor.addEventListener("input", () => {
+    state.settings.bgColor = ui.bgColor.value;
+    reprocessImage();
+  });
+
+  ui.invertInput.addEventListener("change", () => {
+    state.settings.invert = ui.invertInput.checked;
+    reprocessImage();
+  });
+
+  // ── Text ─────────────────────────────────────────────────────────────
+
+  ui.textInput.addEventListener("input", () => {
+    state.text.content = ui.textInput.value;
+    reprocessImage();
+  });
+
+  ui.textClearBtn.addEventListener("click", () => {
+    state.text.content = "";
+    ui.textInput.value = "";
+    reprocessImage();
+  });
+
+  ui.fontSelect.addEventListener("change", () => {
+    state.text.fontFamily = ui.fontSelect.value;
+    reprocessImage();
+  });
+
+  ui.fontSizeInput.addEventListener("input", () => {
+    const v = Math.max(4, Number(ui.fontSizeInput.value));
+    state.text.fontSize = v;
+    reprocessImage();
+  });
+
+  ui.fillColorInput.addEventListener("input", () => {
+    state.text.fillColor = ui.fillColorInput.value;
+    reprocessImage();
+  });
+
+  ui.outlineColorInput.addEventListener("input", () => {
+    state.text.outlineColor = ui.outlineColorInput.value;
+    reprocessImage();
+  });
+
+  ui.outlineWidthInput.addEventListener("input", () => {
+    state.text.outlineWidth = Math.max(0, Number(ui.outlineWidthInput.value));
+    reprocessImage();
+  });
+
+  ui.textXRange.addEventListener("input", () => {
+    state.text.x = Number(ui.textXRange.value);
+    ui.textXValue.textContent = state.text.x;
+    reprocessImage();
+  });
+
+  ui.textYRange.addEventListener("input", () => {
+    state.text.y = Number(ui.textYRange.value);
+    ui.textYValue.textContent = state.text.y;
+    reprocessImage();
+  });
+
+  // ── Brightness / Contrast ─────────────────────────────────────────────
 
   ui.brightnessRange.addEventListener("input", () => {
     state.settings.brightness = Number(ui.brightnessRange.value);
@@ -645,105 +723,25 @@ function renderApp(root) {
     reprocessImage();
   });
 
+  // ── Density ───────────────────────────────────────────────────────────
+
   ui.densityRange.addEventListener("input", () => {
     state.settings.density = Number(ui.densityRange.value);
     ui.densityValue.textContent = ui.densityRange.value;
   });
 
-  ui.ditherInput.addEventListener("change", () => {
-    state.settings.useDither = ui.ditherInput.checked;
-    reprocessImage();
-  });
-
-  ui.invertInput.addEventListener("change", () => {
-    state.settings.invert = ui.invertInput.checked;
-    reprocessImage();
-  });
-
-  // ── Text ─────────────────────────────────────────────────────────────
-
-  ui.textInput.addEventListener("input", () => {
-    state.text.content = ui.textInput.value;
-    // Reset position to top-left (2px margin) when text is first entered.
-    if (state.text.content && state.image.rawGray) {
-      state.text.x = 2;  // 2-dot left margin
-      state.text.y = 0;
-    }
-    updateUI();
-    reprocessImage();
-  });
-
-  ui.fontSizeRange.addEventListener("input", () => {
-    state.text.fontSize = Number(ui.fontSizeRange.value);
-    ui.fontSizeValue.textContent = ui.fontSizeRange.value;
-    reprocessImage();
-  });
-
-  // ── Crop ─────────────────────────────────────────────────────────────
-
-  ui.cropSlider.addEventListener("input", () => {
-    state.image.cropY = Number(ui.cropSlider.value);
-    ui.cropValue.textContent = ui.cropSlider.value;
-    reprocessImage();
-  });
-
-  // ── Text drag on preview canvas (mouse + touch) ───────────────────────
-
-  function canvasCoords(e) {
-    const rect   = ui.previewCanvas.getBoundingClientRect();
-    const scaleX = ui.previewCanvas.width  / ui.previewCanvas.clientWidth;
-    const scaleY = ui.previewCanvas.height / ui.previewCanvas.clientHeight;
-    const src    = e.touches ? e.touches[0] : e;
-    return {
-      x: (src.clientX - rect.left) * scaleX,
-      y: (src.clientY - rect.top)  * scaleY,
-    };
-  }
-
-  function onDragStart(e) {
-    if (!state.text.content) return;
-    const { x, y }        = canvasCoords(e);
-    state.drag.active      = true;
-    state.drag.startMouseX = x;
-    state.drag.startMouseY = y;
-    state.drag.startTextX  = state.text.x;
-    state.drag.startTextY  = state.text.y;
-    e.preventDefault();
-  }
-
-  function onDragMove(e) {
-    if (!state.drag.active) return;
-    const { x, y } = canvasCoords(e);
-    state.text.x = Math.round(state.drag.startTextX + (x - state.drag.startMouseX));
-    state.text.y = Math.round(state.drag.startTextY + (y - state.drag.startMouseY));
-    reprocessImage();
-    e.preventDefault();
-  }
-
-  function onDragEnd() { state.drag.active = false; }
-
-  ui.previewCanvas.addEventListener("mousedown",  onDragStart);
-  ui.previewCanvas.addEventListener("mousemove",  onDragMove);
-  ui.previewCanvas.addEventListener("mouseup",    onDragEnd);
-  ui.previewCanvas.addEventListener("mouseleave", onDragEnd);
-  ui.previewCanvas.addEventListener("touchstart", onDragStart, { passive: false });
-  ui.previewCanvas.addEventListener("touchmove",  onDragMove,  { passive: false });
-  ui.previewCanvas.addEventListener("touchend",   onDragEnd);
-
   // ── Print ─────────────────────────────────────────────────────────────
 
   ui.printBtn.addEventListener("click", async () => {
-    if (!state.image.bitmap || !state.ble.connected) return;
-
+    if (!state.print.bitmap || !state.ble.connected) return;
     state.status.printing = true;
     updateUI();
-    setStatus("Sending print job…");
-
+    setStatus("Sending print job\u2026");
     try {
       const payload = buildPrintPayload(
-        state.image.bitmap,
-        state.image.width,
-        state.image.height,
+        state.print.bitmap,
+        state.print.printWidth,
+        state.print.printHeight,
         state.settings.density,
       );
       await writePrintPayload(payload);
@@ -756,6 +754,8 @@ function renderApp(root) {
     }
   });
 
+  // Initial render (empty label)
+  reprocessImage();
   updateUI();
 }
 
