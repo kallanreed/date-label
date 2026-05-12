@@ -64,7 +64,7 @@ const state = {
     invert:     false,
     brightness: 0,
     contrast:   0,
-    density:    3,
+    density:    5,
   },
   print: {
     bitmap:      null,
@@ -605,8 +605,8 @@ function renderApp(root) {
         <p id="preview-status" class="status">No content.</p>
         <div class="dp-row" style="margin-top:0.6rem;flex-wrap:wrap;">
           <span class="dp-label">Density</span>
-          <input id="density-range" type="range" min="1" max="15" value="3" style="flex:1;min-width:6rem;" />
-          <span id="density-value" class="dp-val">3</span>
+          <input id="density-range" type="range" min="1" max="15" value="5" style="flex:1;min-width:6rem;" />
+          <span id="density-value" class="dp-val">5</span>
           <button id="print-btn" type="button" disabled style="margin-left:auto;">Print</button>
         </div>
       </section>
