@@ -32,6 +32,7 @@
 .settings-row input[type="range"],
 .dp-row input[type="range"] {
   height: auto;
+  min-width: 0;
   padding: 0;
   border: none;
   background: transparent;
@@ -50,8 +51,8 @@
 .dp-row {
   display: flex;
   align-items: center;
-  gap: 0.4rem;
-  margin-bottom: 0.35rem;
+  gap: 0.3rem;
+  margin-bottom: 0.3rem;
 }
 
 .dp-row:last-child {
@@ -73,8 +74,16 @@
 .dp-label {
   font-size: 0.82rem;
   white-space: nowrap;
-  min-width: 3.8rem;
+  min-width: 0;
   color: #c9d2e3;
+}
+
+.dp-axis-label {
+  width: 0.9rem;
+}
+
+.dp-measure-label {
+  width: 5.1rem;
 }
 
 .dp-val {
