@@ -309,7 +309,7 @@ function compositeLabel() {
 
     if (state.text.outlineWidth > 0) {
       ctx.strokeStyle = state.text.outlineColor;
-      ctx.lineWidth   = state.text.outlineWidth * 2;  // stroke is centered; half goes outside
+      ctx.lineWidth   = state.text.outlineWidth * 2;  // doubled: centered stroke puts half inside, half outside the glyph edge
       ctx.strokeText(state.text.content, state.text.x, state.text.y);
     }
 
@@ -373,7 +373,7 @@ function drawPreview(dithered) {
   const bytes = Math.ceil(LABEL_H / 8) * LABEL_W;
   if (ui.previewStatus) {
     ui.previewStatus.textContent =
-      `${LABEL_W}\u00d7${LABEL_H} px \u2192 printed as ${LABEL_H}\u00d7${LABEL_W} \xb7 ${bytes} bytes`;
+      `${LABEL_W}×${LABEL_H} px → printed as ${LABEL_H}×${LABEL_W} · ${bytes} bytes`;
   }
 }
 
@@ -485,7 +485,7 @@ function renderApp(root) {
         <!-- Text -->
         <div class="dp-section">
           <div class="dp-row">
-            <input id="text-input" type="text" placeholder="Label text\u2026" style="flex:1;min-width:0;" />
+            <input id="text-input" type="text" placeholder="Label text…" style="flex:1;min-width:0;" />
             <button id="text-clear-btn" type="button" class="secondary" title="Clear text">&#x2715;</button>
           </div>
           <div class="dp-row" style="flex-wrap:wrap;">
@@ -590,7 +590,7 @@ function renderApp(root) {
     if (state.ble.connected) {
       await disconnectPrinter();
     } else {
-      setStatus("Connecting\u2026");
+      setStatus("Connecting…");
       try { await connectPrinter(); } catch (err) { setStatus(err.message); }
     }
     updateUI();
@@ -603,7 +603,7 @@ function renderApp(root) {
   ui.fileInput.addEventListener("change", async (e) => {
     const file = e.target.files[0];
     if (!file) return;
-    if (ui.previewStatus) ui.previewStatus.textContent = "Loading\u2026";
+    if (ui.previewStatus) ui.previewStatus.textContent = "Loading…";
     try {
       await loadImage(file);
       if (ui.imgName) ui.imgName.textContent = file.name;
@@ -736,7 +736,7 @@ function renderApp(root) {
     if (!state.print.bitmap || !state.ble.connected) return;
     state.status.printing = true;
     updateUI();
-    setStatus("Sending print job\u2026");
+    setStatus("Sending print job…");
     try {
       const payload = buildPrintPayload(
         state.print.bitmap,
