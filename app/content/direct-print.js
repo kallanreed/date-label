@@ -263,7 +263,6 @@ async function loadImage(file) {
 function syncImageSliders() {
   if (!ui.imgWRange) return;
   ui.imgWRange.value       = state.image.drawW;
-  ui.imgWValue.textContent = `${state.image.drawW}px`;
   ui.imgXRange.value       = state.image.x;
   ui.imgYRange.value       = state.image.y;
 }
@@ -535,15 +534,16 @@ function renderApp(root) {
             <span id="img-name" class="meta" style="flex:1;margin:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"></span>
           </div>
           <div class="dp-row">
-            <span class="dp-label">W</span>
-            <input id="img-w-range" type="range" min="8" max="640" value="320" style="flex:1;" />
-            <span id="img-w-value" class="dp-val">320px</span>
+            <span class="dp-label dp-axis-label">W</span>
+            <input id="img-w-range" type="range" min="8" max="640" value="320" style="flex:1;min-width:0;" />
           </div>
           <div class="dp-row">
-            <span class="dp-label">X</span>
-            <input id="img-x-range" type="range" min="-320" max="320" value="0" style="flex:1;" />
-            <span class="dp-label">Y</span>
-            <input id="img-y-range" type="range" min="-96" max="96" value="0" style="flex:1;" />
+            <span class="dp-label dp-axis-label">X</span>
+            <input id="img-x-range" type="range" min="-320" max="320" value="0" style="flex:1;min-width:0;" />
+          </div>
+          <div class="dp-row">
+            <span class="dp-label dp-axis-label">Y</span>
+            <input id="img-y-range" type="range" min="-96" max="96" value="0" style="flex:1;min-width:0;" />
           </div>
         </div>
 
@@ -568,24 +568,24 @@ function renderApp(root) {
             <input id="outline-width-input" type="number" min="0" max="30" value="8" class="dp-number" title="Outline width" />
           </div>
           <div class="dp-row">
-            <span class="dp-label">X</span>
-            <input id="text-x-range" type="range" min="-320" max="320" value="0" style="flex:1;" />
-            <span class="dp-label">Y</span>
-            <input id="text-y-range" type="range" min="-96" max="96" value="0" style="flex:1;" />
+            <span class="dp-label dp-axis-label">X</span>
+            <input id="text-x-range" type="range" min="-320" max="320" value="0" style="flex:1;min-width:0;" />
+          </div>
+          <div class="dp-row">
+            <span class="dp-label dp-axis-label">Y</span>
+            <input id="text-y-range" type="range" min="-96" max="96" value="0" style="flex:1;min-width:0;" />
           </div>
         </div>
 
         <!-- Brightness / Contrast -->
         <div class="dp-section">
           <div class="dp-row">
-            <span class="dp-label">Brightness</span>
-            <input id="brightness-range" type="range" min="-100" max="100" value="0" style="flex:1;" />
-            <span id="brightness-value" class="dp-val">0</span>
+            <span class="dp-label dp-measure-label">Brightness</span>
+            <input id="brightness-range" type="range" min="-100" max="100" value="0" style="flex:1;min-width:0;" />
           </div>
           <div class="dp-row">
-            <span class="dp-label">Contrast</span>
-            <input id="contrast-range" type="range" min="-100" max="100" value="0" style="flex:1;" />
-            <span id="contrast-value" class="dp-val">0</span>
+            <span class="dp-label dp-measure-label">Contrast</span>
+            <input id="contrast-range" type="range" min="-100" max="100" value="0" style="flex:1;min-width:0;" />
           </div>
         </div>
 
@@ -600,7 +600,6 @@ function renderApp(root) {
         <div class="dp-row" style="margin-top:0.6rem;flex-wrap:wrap;">
           <span class="dp-label">Density</span>
           <input id="density-range" type="range" min="1" max="15" value="5" style="flex:1;min-width:6rem;" />
-          <span id="density-value" class="dp-val">5</span>
           <button id="print-btn" type="button" disabled style="margin-left:auto;">Print</button>
         </div>
       </section>
@@ -621,7 +620,6 @@ function renderApp(root) {
   ui.bgColor           = root.querySelector("#bg-color");
   ui.invertInput       = root.querySelector("#invert-input");
   ui.imgWRange         = root.querySelector("#img-w-range");
-  ui.imgWValue         = root.querySelector("#img-w-value");
   ui.imgXRange         = root.querySelector("#img-x-range");
   ui.imgYRange         = root.querySelector("#img-y-range");
   ui.textInput         = root.querySelector("#text-input");
@@ -634,13 +632,10 @@ function renderApp(root) {
   ui.textXRange        = root.querySelector("#text-x-range");
   ui.textYRange        = root.querySelector("#text-y-range");
   ui.brightnessRange   = root.querySelector("#brightness-range");
-  ui.brightnessValue   = root.querySelector("#brightness-value");
   ui.contrastRange     = root.querySelector("#contrast-range");
-  ui.contrastValue     = root.querySelector("#contrast-value");
   ui.previewCanvas     = root.querySelector("#preview-canvas");
   ui.previewStatus     = root.querySelector("#preview-status");
   ui.densityRange      = root.querySelector("#density-range");
-  ui.densityValue      = root.querySelector("#density-value");
   ui.printBtn          = root.querySelector("#print-btn");
 
   // ── Printer ──────────────────────────────────────────────────────────
@@ -684,7 +679,6 @@ function renderApp(root) {
 
   ui.imgWRange.addEventListener("input", () => {
     state.image.drawW    = Number(ui.imgWRange.value);
-    ui.imgWValue.textContent = `${state.image.drawW}px`;
     reprocessImage();
   });
 
@@ -768,13 +762,11 @@ function renderApp(root) {
 
   ui.brightnessRange.addEventListener("input", () => {
     state.settings.brightness = Number(ui.brightnessRange.value);
-    ui.brightnessValue.textContent = ui.brightnessRange.value;
     reprocessImage();
   });
 
   ui.contrastRange.addEventListener("input", () => {
     state.settings.contrast = Number(ui.contrastRange.value);
-    ui.contrastValue.textContent = ui.contrastRange.value;
     reprocessImage();
   });
 
@@ -782,7 +774,6 @@ function renderApp(root) {
 
   ui.densityRange.addEventListener("input", () => {
     state.settings.density = Number(ui.densityRange.value);
-    ui.densityValue.textContent = ui.densityRange.value;
   });
 
   // ── Print ─────────────────────────────────────────────────────────────
